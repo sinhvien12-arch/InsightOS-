@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase, supabaseConfigured } from './supabase'
+import { reviewsToMetrics } from './aggregate'
 import type { BranchMetrics, ProcessedReview } from './uploadTypes'
 import type { Branch, Alert, Issue, PainPoint, Priority, IssueStatus } from '@/data/types'
 
@@ -265,12 +266,18 @@ export function useLiveData(forceDemo = false): LiveDataResult {
       })
   }, [forceDemo, refreshKey])
 
+  // Re-derive metrics from raw reviews when available so chain stats,
+  // per-branch percentages, and sentiment counts are always accurate.
+  // branch_metrics in Supabase may be stale (e.g. neutral_count column added
+  // after rows were written, or N/A branch excluded by an older upload).
+  const effective = reviews.length > 0 ? reviewsToMetrics(reviews) : metrics
+
   const live = {
-    branches:   metrics.map(metricsToBranch),
-    alerts:     metricsToAlerts(metrics),
-    issues:     metricsToIssues(metrics),
-    chainStats: metricsToChainStats(metrics),
+    branches:   effective.map(metricsToBranch),
+    alerts:     metricsToAlerts(effective),
+    issues:     metricsToIssues(effective),
+    chainStats: metricsToChainStats(effective),
   }
 
-  return { mode, metrics, reviews, refresh, ...live }
+  return { mode, metrics: effective, reviews, refresh, ...live }
 }
