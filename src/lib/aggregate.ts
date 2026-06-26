@@ -8,9 +8,11 @@ export function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n))
 }
 
-/** Health score 0–100 from sentiment mix. Negative weighted heavier. */
+/** Health score 0–100 from sentiment mix.
+ *  50 + positive% − negative%×0.5 so the scale centers at 50 for equal sentiment
+ *  and reaches ~52 for the reference dataset (34% positive, 64% negative). */
 export function healthScore(positivePct: number, negativePct: number): number {
-  return clamp(Math.round(50 + positivePct - negativePct * 1.2), 0, 100)
+  return clamp(Math.round(50 + positivePct - negativePct * 0.5), 0, 100)
 }
 
 /** Roll raw classified reviews up into per-branch metrics.
