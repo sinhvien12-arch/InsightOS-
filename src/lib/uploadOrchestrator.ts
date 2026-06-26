@@ -1,15 +1,16 @@
 // Client-side upload pipeline: parse CSV → chunked AI classify → aggregate → persist.
-// Keeps the upload page thin (file-size rule) and the flow testable in isolation.
+// If the CSV already has a 'sentiment' column, those labels are used as-is and AI
+// classification is skipped for those rows (saves time + API cost).
 
 import Papa from 'papaparse'
 import * as XLSX from 'xlsx'
 import { supabaseConfigured } from './supabase'
 import { auth } from './firebase'
 import { reviewsToMetrics } from './aggregate'
-import type { ProcessedReview, BranchMetrics } from './uploadTypes'
+import type { ProcessedReview, BranchMetrics, SentimentLabel } from './uploadTypes'
 
 const CHUNK = 50
-const CONCURRENCY = 5   // parallel OpenAI batches — cuts wall time ~5x
+const CONCURRENCY = 5
 const PERSIST_BATCH = 500
 export const MAX_ROWS = 5000
 
@@ -23,7 +24,7 @@ export interface UploadProgress {
 
 export interface UploadSummary {
   totalReviews:   number
-  dedupedCount:   number   // rows removed because file contained identical (branch+date+text)
+  dedupedCount:   number
   branches:       number
   positivePct:    number
   avgHealthScore: number
@@ -39,32 +40,55 @@ interface CsvRow {
   platform?:    string
   rating?:      string
   author_name?: string
+  sentiment?:   string   // pre-labeled sentiment from CSV (optional)
+}
+
+// Normalize CSV header keys to lowercase so "Date"/"DATE"/"date" all work.
+function normalizeRow(raw: Record<string, unknown>): CsvRow {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(raw)) out[k.toLowerCase()] = v
+  return out as CsvRow
+}
+
+// Map CSV sentiment cell to stored SentimentLabel.
+// Handles English and Vietnamese, any capitalisation.
+function parseSentiment(s?: string): SentimentLabel | null {
+  switch (s?.toLowerCase().trim()) {
+    case 'positive': case 'tích cực':   return 'positive'
+    case 'negative': case 'tiêu cực':   return 'negative'
+    case 'neutral':  case 'trung tính': return 'neutral'
+    default: return null
+  }
 }
 
 async function parseFile(file: File): Promise<CsvRow[]> {
   const name = file.name.toLowerCase()
-  // Excel: read all cells as formatted strings so downstream .trim() is safe.
+  let raw: Record<string, unknown>[]
+
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' })
     const sheet = wb.Sheets[wb.SheetNames[0]]
-    return XLSX.utils.sheet_to_json<CsvRow>(sheet, { defval: '', raw: false })
-  }
-  // CSV (default)
-  return new Promise((resolve, reject) => {
-    Papa.parse<CsvRow>(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: r => resolve(r.data),
-      error:    e => reject(new Error(e.message)),
+    raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '', raw: false })
+  } else {
+    raw = await new Promise((resolve, reject) => {
+      Papa.parse<Record<string, unknown>>(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: r => resolve(r.data),
+        error:    e => reject(new Error(e.message)),
+      })
     })
-  })
+  }
+
+  // Normalize all header keys to lowercase so column name casing doesn't matter.
+  return raw.map(normalizeRow)
 }
 
 function today() {
   return new Date().toISOString().split('T')[0]
 }
 
-type ChunkResult = { sentiment: ProcessedReview['sentiment']; sentiment_score: number; categories: ProcessedReview['categories'] }
+type ChunkResult = { sentiment: SentimentLabel; sentiment_score: number; categories: ProcessedReview['categories'] }
 
 async function classifyChunk(
   rows: { review_text: string; rating: number | null }[],
@@ -82,7 +106,6 @@ async function classifyChunk(
     }
     return { results: data.results, ok: true }
   } catch (err) {
-    // A failed chunk must not block the whole upload — neutral fallback, but flag it.
     console.error('[upload] chunk classification failed:', err)
     return {
       ok: false,
@@ -122,42 +145,62 @@ export async function processFile(
     throw new Error('Missing required columns: branch_name, review_text.')
   }
 
-  // Keep every row exactly as-is — use defaults only for truly empty fields.
   const rows = raw.map(r => ({
-    branch_name: r.branch_name?.trim() || 'N/A',
-    review_text: r.review_text?.trim() || '',
-    date:        r.date?.trim() || today(),
-    platform:    r.platform?.trim() || 'csv',
-    author_name: r.author_name?.trim() || undefined,
-    rating:      r.rating != null && r.rating !== '' ? Number(r.rating) : null,
-    _noText:     !r.review_text?.trim(),
+    branch_name:   r.branch_name?.trim() || 'N/A',
+    review_text:   r.review_text?.trim() || '',
+    date:          r.date?.trim() || today(),
+    platform:      r.platform?.trim() || 'csv',
+    author_name:   r.author_name?.trim() || undefined,
+    rating:        r.rating != null && r.rating !== '' ? Number(r.rating) : null,
+    _noText:       !r.review_text?.trim(),
+    _csvSentiment: parseSentiment(r.sentiment),  // null = not pre-labeled
   }))
 
-  // Auth token for the server routes (upload requires a signed-in org user).
   const token = await auth.currentUser?.getIdToken()
   if (!token) throw new Error('You must be signed in to upload.')
 
-  // 2. Chunked AI classification — chunks run CONCURRENCY-at-a-time to cut wall time.
-  //    Rows with no review_text skip AI and get neutral sentiment directly.
-  const total = rows.length
+  // 2. Classify sentiment
+  //    Priority: CSV pre-label > AI (has text) > neutral fallback (no text)
   const nowIso = new Date().toISOString()
   let failedChunks = 0
+  let doneCount = 0
+  const total = rows.length
 
-  const needsAI = rows.filter(r => !r._noText)
-  const noText  = rows.filter(r => r._noText)
+  // Rows with a valid pre-labeled sentiment — skip AI entirely.
+  const preLabeled = rows.filter(r => r._csvSentiment !== null)
+  // Rows without pre-label but with review text — run AI.
+  const needsAI    = rows.filter(r => r._csvSentiment === null && !r._noText)
+  // Rows without pre-label and without text — neutral fallback.
+  const noText     = rows.filter(r => r._csvSentiment === null && r._noText)
 
+  // Pre-labeled rows: use CSV sentiment directly.
+  const preLabeledProcessed: ProcessedReview[] = preLabeled.map(s => ({
+    date: s.date, platform: s.platform, branch_name: s.branch_name,
+    review_text: s.review_text, author_name: s.author_name,
+    rating: s.rating ?? undefined,
+    sentiment:       s._csvSentiment!,
+    sentiment_score: s._csvSentiment === 'positive' ? 0.9 : s._csvSentiment === 'negative' ? 0.1 : 0.5,
+    categories:      ['general' as const],
+    keywords_found:  [],
+    processed_at:    nowIso,
+  }))
+  doneCount += preLabeled.length
+  if (preLabeled.length) onProgress({ phase: 'analyzing', done: Math.min(doneCount, total), total })
+
+  // AI-classified rows.
   const slices: typeof needsAI[] = []
   for (let i = 0; i < needsAI.length; i += CHUNK) slices.push(needsAI.slice(i, i + CHUNK))
   const totalChunks = slices.length
   const chunkOut: ProcessedReview[][] = new Array(slices.length)
 
   let nextIdx = 0
-  let doneCount = 0
   async function worker() {
     while (nextIdx < slices.length) {
       const idx = nextIdx++
       const slice = slices[idx]
-      const { results, ok } = await classifyChunk(slice.map(s => ({ review_text: s.review_text, rating: s.rating })), token!)
+      const { results, ok } = await classifyChunk(
+        slice.map(s => ({ review_text: s.review_text, rating: s.rating })), token!,
+      )
       if (!ok) failedChunks++
       chunkOut[idx] = slice.map((s, j) => ({
         date: s.date, platform: s.platform, branch_name: s.branch_name,
@@ -175,7 +218,7 @@ export async function processFile(
   }
   if (slices.length) await Promise.all(Array.from({ length: Math.min(CONCURRENCY, slices.length) }, worker))
 
-  // Rows with no review_text: pre-assign neutral, skip AI.
+  // No-text rows: neutral fallback.
   const noTextProcessed: ProcessedReview[] = noText.map(s => ({
     date: s.date, platform: s.platform, branch_name: s.branch_name,
     review_text: s.review_text, author_name: s.author_name,
@@ -186,11 +229,9 @@ export async function processFile(
     processed_at: nowIso,
   }))
 
-  // Dedup by (branch_name, date, review_text) — required because PostgreSQL's
-  // ON CONFLICT DO UPDATE errors if the same key appears twice in one batch.
-  // We keep the first occurrence and count how many were removed so the UI can warn the user.
+  // Dedup by (branch_name, date, review_text) — required for Postgres unique constraint.
   const seen = new Set<string>()
-  const flat = [...chunkOut.flat(), ...noTextProcessed]
+  const flat = [...preLabeledProcessed, ...chunkOut.flat(), ...noTextProcessed]
   const processed: ProcessedReview[] = flat.filter(r => {
     const k = `${r.branch_name}||${r.date}||${r.review_text}`
     if (seen.has(k)) return false
@@ -199,20 +240,17 @@ export async function processFile(
   })
   const dedupedCount = flat.length - processed.length
 
-  // 3. Aggregate
+  // 3. Aggregate client-side (for the summary card).
   const metrics = reviewsToMetrics(processed)
 
-  // 4. Persist via the authenticated server route (no client-side anon writes).
+  // 4. Persist.
   let saved = false
   if (supabaseConfigured) {
     onProgress({ phase: 'saving', done: total, total })
-    // Replace mode: wipe old data first (after analysis succeeded, before insert).
     if (mode === 'replace') await persist(token, { clear: true })
-    // Reviews in batches to keep request bodies small.
     for (let i = 0; i < processed.length; i += PERSIST_BATCH) {
       await persist(token, { reviews: processed.slice(i, i + PERSIST_BATCH) })
     }
-    // Recompute metrics from the full reviews table → consistent for both modes.
     await persist(token, { recompute: true })
     saved = true
   }
@@ -220,8 +258,8 @@ export async function processFile(
   onProgress({ phase: 'done', done: total, total })
 
   const totalPositive = metrics.reduce((s, m) => s + m.positive_count, 0)
-  const positivePct = processed.length ? Math.round((totalPositive / processed.length) * 100) : 0
-  const avgHealth = metrics.length
+  const positivePct   = processed.length ? Math.round((totalPositive / processed.length) * 100) : 0
+  const avgHealth     = metrics.length
     ? Math.round(metrics.reduce((s, m) => s + m.health_score, 0) / metrics.length)
     : 0
 
