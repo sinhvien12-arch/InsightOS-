@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { useLang } from '@/lib/LangContext'
 import { useLiveData } from '@/lib/useLiveData'
+import { platformCounts } from '@/lib/aggregate'
 import {
   BookOpen, Database, TrendingUp, Lightbulb, Users, BarChart3,
   ShoppingBag, Star, Globe,
@@ -17,7 +18,7 @@ const SECTIONS = [
   { id: 'why',         label: 'Why InsightOS',          labelVI: 'Tại sao InsightOS'     },
 ]
 
-const DATA_SOURCES = [
+const FALLBACK_SOURCES = [
   { platform: 'Google Reviews', icon: Star,        reviews: 275, type: 'Review Platform',   focus: 'Overall experience, ambience, service quality' },
   { platform: 'ShopeeFood',     icon: ShoppingBag, reviews: 154, type: 'Delivery Platform', focus: 'Delivery speed, packaging, order accuracy'     },
   { platform: 'GrabFood',       icon: ShoppingBag, reviews: 64,  type: 'Delivery Platform', focus: 'Delivery time, product quality, driver issues'  },
@@ -28,10 +29,50 @@ export default function ResearchPage() {
   const { lang } = useLang()
   const [active, setActive] = useState('pain')
   const vi = lang === 'vi'
-  const { chainStats, branches: liveBranches, mode } = useLiveData()
+  const { chainStats, branches: liveBranches, mode, reviews } = useLiveData()
   const isLive      = mode === 'live'
-  const totalReviews = isLive ? chainStats.totalReviews : 504
+  const hasLive     = isLive && reviews.length > 0
+  const totalReviews = hasLive ? chainStats.totalReviews : 504
   const branchCount  = isLive ? liveBranches.length     : 5
+
+  // Dynamic platform breakdown when live data is available
+  const DATA_SOURCES = useMemo(() => {
+    if (!hasLive) return FALLBACK_SOURCES
+    const liveCounts = platformCounts(reviews)
+    return liveCounts.map(({ name, value }) => ({
+      platform: name,
+      icon: name.toLowerCase().includes('google') ? Star : name.toLowerCase().includes('tiktok') ? Globe : ShoppingBag,
+      reviews: value,
+      type: name.toLowerCase().includes('google') ? 'Review Platform' : name.toLowerCase().includes('facebook') || name.toLowerCase().includes('tiktok') ? 'Social Media' : 'Delivery Platform',
+      focus: 'Customer reviews and feedback',
+    }))
+  }, [hasLive, reviews])
+
+  // Dynamic stats block
+  const minBranch = useMemo(() =>
+    [...liveBranches].sort((a, b) => a.healthScore - b.healthScore)[0],
+    [liveBranches]
+  )
+  const waitPct = useMemo(() => {
+    if (!hasLive) return 28
+    const waitCount = reviews.filter(r => {
+      const cats = Array.isArray(r.categories) ? r.categories : []
+      return cats.includes('waiting_time')
+    }).length
+    return reviews.length ? Math.round((waitCount / reviews.length) * 100) : 0
+  }, [hasLive, reviews])
+
+  const evidenceStats = hasLive ? [
+    { val: `${chainStats.negativePct}%`, color: 'text-red-500',   bg: 'bg-red-50',   label: vi ? 'Đánh giá tiêu cực' : 'Negative reviews' },
+    { val: `${waitPct}%`,               color: 'text-amber-600', bg: 'bg-amber-50', label: vi ? 'Phàn nàn thời gian chờ' : 'Wait complaints' },
+    { val: `${minBranch?.healthScore ?? 0}`, color: 'text-red-600', bg: 'bg-red-50', label: vi ? `Điểm thấp nhất (${minBranch?.name ?? '-'})` : `Lowest score (${minBranch?.name ?? '-'})` },
+    { val: `${chainStats.avgHealthScore}`, color: 'text-slate-700', bg: 'bg-slate-50', label: vi ? 'Điểm sức khỏe chuỗi' : 'Chain health score' },
+  ] : [
+    { val: '64%', color: 'text-red-500',   bg: 'bg-red-50',   label: vi ? 'Đánh giá tiêu cực' : 'Negative reviews' },
+    { val: '28%', color: 'text-amber-600', bg: 'bg-amber-50', label: vi ? 'Phàn nàn thời gian chờ' : 'Wait complaints' },
+    { val: '43',  color: 'text-red-600',   bg: 'bg-red-50',   label: vi ? 'Điểm thấp nhất (Thanh Thái)' : 'Lowest score (Thanh Thái)' },
+    { val: '54',  color: 'text-slate-700', bg: 'bg-slate-50', label: vi ? 'Điểm sức khỏe chuỗi' : 'Chain health score' },
+  ]
 
   return (
     <motion.div
@@ -115,13 +156,8 @@ export default function ResearchPage() {
                   {vi ? `Thực trạng từ ${totalReviews} đánh giá thực tế` : `Evidence from ${totalReviews} real customer reviews`}
                 </h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {[
-                    { val: '64%',  color: 'text-red-500',     bg: 'bg-red-50',     label: vi ? 'Đánh giá tiêu cực' : 'Negative reviews'              },
-                    { val: '28%',  color: 'text-amber-600',   bg: 'bg-amber-50',   label: vi ? 'Phàn nàn thời gian chờ' : 'Wait complaints'           },
-                    { val: '43',   color: 'text-red-600',     bg: 'bg-red-50',     label: vi ? 'Điểm thấp nhất (Thanh Thái)' : 'Lowest score (Thanh Thái)' },
-                    { val: '54',   color: 'text-slate-700',   bg: 'bg-slate-50',   label: vi ? 'Điểm sức khỏe chuỗi' : 'Chain health score'           },
-                  ].map(s => (
-                    <div key={s.val} className={`${s.bg} rounded-xl p-4 text-center`}>
+                  {evidenceStats.map(s => (
+                    <div key={s.label} className={`${s.bg} rounded-xl p-4 text-center`}>
                       <div className={`text-2xl font-bold ${s.color}`}>{s.val}</div>
                       <div className="text-[10px] text-slate-500 mt-0.5">{s.label}</div>
                     </div>

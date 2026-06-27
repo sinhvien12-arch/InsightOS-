@@ -176,17 +176,21 @@ export default function FeedbackEnginePage() {
   const router   = useRouter()
   const vi       = lang === 'vi'
 
-  const { branches: liveBranches, mode } = useLiveData()
+  const { branches: liveBranches, mode, reviews } = useLiveData()
   const isLive      = mode === 'live'
-  const totalClean  = isLive ? 504 : 504
+  const hasLive     = isLive && reviews.length > 0
+  const totalClean  = hasLive ? reviews.length : 504
+  const totalRaw    = hasLive ? reviews.length : 539
   const branchCount = isLive ? liveBranches.length : 5
 
-  // Source counts are hardcoded from the confirmed research dataset.
-  // The DB only stores clean records — raw entry counts per platform are not
-  // queryable from the reviews table, so fallback values are always used.
-  const SOURCES: SourceEntry[] = SOURCES_META.map(s => ({ ...s, records: s.fallback }))
-
-  const totalRaw = 539
+  const liveUpdated = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  const SOURCES: SourceEntry[] = SOURCES_META.map(s => ({
+    ...s,
+    updated: hasLive ? liveUpdated : s.updated,
+    records: hasLive
+      ? reviews.filter(r => (r.platform ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').includes(s.platformKey)).length
+      : s.fallback,
+  }))
 
   const SUMMARY: SummaryItem[] = [
     { label: 'Raw Feedback Records',       labelVi: 'Bản ghi thô',              value: totalRaw,    suffix: '',  icon: Database,  color: 'text-slate-300'   },

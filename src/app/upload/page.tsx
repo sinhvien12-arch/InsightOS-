@@ -87,6 +87,11 @@ export default function UploadPage() {
       }, mode)
       setSummary(result)
       setState('success')
+      // Signal all mounted useLiveData() instances (same tab) and other tabs (storage event)
+      try {
+        localStorage.setItem('insightos-data-updated', Date.now().toString())
+        window.dispatchEvent(new CustomEvent('insightos-data-updated'))
+      } catch { /* ignore if storage is blocked */ }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : (vi ? 'Tải lên thất bại.' : 'Upload failed.'))
       setState('error')

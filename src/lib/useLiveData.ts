@@ -322,6 +322,27 @@ export function useLiveData(forceDemo = false): LiveDataResult {
     setRefreshKey(k => k + 1)
   }
 
+  // Re-fetch whenever another component signals a completed upload
+  useEffect(() => {
+    if (forceDemo || !supabaseConfigured) return
+    const doRefresh = () => {
+      setMode('checking')
+      setMetrics([])
+      setReviews([])
+      setLiveActions([])
+      setRefreshKey(k => k + 1)
+    }
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'insightos-data-updated') doRefresh()
+    }
+    window.addEventListener('insightos-data-updated', doRefresh as EventListener)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener('insightos-data-updated', doRefresh as EventListener)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [forceDemo])
+
   useEffect(() => {
     if (forceDemo || !supabaseConfigured || !supabase) {
       setMode('demo')
