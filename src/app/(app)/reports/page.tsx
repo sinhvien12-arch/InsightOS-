@@ -1,13 +1,16 @@
 'use client'
 
+import { useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { FileText, Download, AlertTriangle, TrendingDown, Zap, Star, BarChart3 } from 'lucide-react'
 import { useLang } from '@/lib/LangContext'
 import { useLiveData } from '@/lib/useLiveData'
+import { liveToRecommendations } from '@/lib/liveRecommendations'
 import { branches as demoBranches, chainStats as demoChainStats } from '@/data/branches'
 import { issueStats as demoIssueStats } from '@/data/issues'
-import { actionStats } from '@/data/actions'
+import { actionStats as demoActionStats } from '@/data/actions'
 import ClosedLoopFlow from '@/components/ClosedLoopFlow'
+import type { LiveLoopStats } from '@/components/ClosedLoopFlow'
 
 const fade    = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } }
 const stagger = { show: { transition: { staggerChildren: 0.08 } } }
@@ -21,19 +24,39 @@ export default function ReportsPage() {
   const { lang, t } = useLang()
   const vi = lang === 'vi'
 
-  const { mode, branches: liveBranches, chainStats: liveChain, issues: liveIssues } = useLiveData()
+  const { mode, branches: liveBranches, chainStats: liveChain, issues: liveIssues, liveActions, metrics } = useLiveData()
   const isLive = mode === 'live'
+
+  const liveRecs = useMemo(() => liveToRecommendations(metrics), [metrics])
+
+  const actionStats = isLive ? {
+    total:      liveActions.length,
+    pending:    liveActions.filter(a => a.status === 'Pending').length,
+    inProgress: liveActions.filter(a => a.status === 'In Progress').length,
+    monitoring: liveActions.filter(a => a.status === 'Monitoring').length,
+    done:       liveActions.filter(a => a.status === 'Done').length,
+  } : demoActionStats
+
+  const loopStats: LiveLoopStats | null = isLive ? {
+    issuesDetected:     liveIssues.length,
+    recsGenerated:      liveRecs.length,
+    actionsAssigned:    liveActions.length,
+    actionsImplemented: liveActions.filter(a => a.status === 'Done').length,
+    actionsMonitoring:  liveActions.filter(a => !!a.monitoring).length,
+    actionsImproved:    liveActions.filter(a => (a.actualImpact?.length ?? 0) > 0).length,
+  } : null
 
   const branches   = isLive ? liveBranches  : demoBranches
   const chain      = isLive ? liveChain     : demoChainStats
 
-  // Derive issue stats from live data
-  const issueStats = isLive ? {
-    critical:   liveIssues.filter(i => i.priority === 'Critical').length,
-    open:       liveIssues.filter(i => i.status === 'Open').length,
-    inProgress: liveIssues.filter(i => i.status === 'In Progress').length,
-    monitoring: liveIssues.filter(i => i.status === 'Monitoring').length,
-    resolved:   liveIssues.filter(i => i.status === 'Resolved').length,
+  // Derive issue stats from live data; fall back to demo when live produces none
+  const effectiveIssues = (isLive && liveIssues.length > 0) ? liveIssues : (isLive ? [] : null)
+  const issueStats = effectiveIssues !== null ? {
+    critical:   effectiveIssues.filter(i => i.priority === 'Critical').length,
+    open:       effectiveIssues.filter(i => i.status === 'Open').length,
+    inProgress: effectiveIssues.filter(i => i.status === 'In Progress').length,
+    monitoring: effectiveIssues.filter(i => i.status === 'Monitoring').length,
+    resolved:   effectiveIssues.filter(i => i.status === 'Resolved').length,
   } : demoIssueStats
 
   // Critical branches for the alert summary
@@ -114,7 +137,7 @@ export default function ReportsPage() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {[
               { label: t('dash.totalReviews'), value: chain.totalReviews,  icon: BarChart3, color: 'text-primary-600' },
-              { label: t('dash.avgRating'),    value: `${chain.avgRating}★`, icon: Star,    color: 'text-amber-500' },
+              { label: t('dash.avgRating'),    value: mode === 'checking' ? '…' : chain.avgRating > 0 ? `${chain.avgRating}★` : isLive ? '—' : `${chain.avgRating}★`, icon: Star, color: 'text-amber-500' },
               { label: t('negative'),          value: `${chain.negativePct}%`, icon: TrendingDown, color: 'text-red-500' },
               { label: vi ? 'Hành động đang mở' : 'Active Actions', value: actionStats.pending + actionStats.inProgress, icon: Zap, color: 'text-amber-500' },
             ].map((m, i) => (
@@ -215,7 +238,7 @@ export default function ReportsPage() {
 
       {/* Closed Loop Flow */}
       <motion.div variants={fade}>
-        <ClosedLoopFlow />
+        <ClosedLoopFlow liveStats={loopStats} />
       </motion.div>
 
       {/* Top recommendations */}

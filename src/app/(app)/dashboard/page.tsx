@@ -78,7 +78,7 @@ export default function DashboardPage() {
     ? (liveReviews.length ? painPointCounts(liveReviews) : painsFromBranches(liveBranches))
     : getPainPointCounts()
 
-  const criticalCount = branches.filter(b => b.healthScore < 50).length
+  const criticalCount = branches.filter(b => b.healthScore < 60).length
   const topAlerts = alerts.slice(0, 4)
 
   return (

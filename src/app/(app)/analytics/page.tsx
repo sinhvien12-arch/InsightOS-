@@ -261,7 +261,7 @@ export default function AnalyticsPage() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {[
                     { label: t('analytics.customerReviews'),   val: String(chainStats.totalReviews ?? 0),     sub: t('analytics.hanoiBranches')  },
-                    { label: t('analytics.chainAvgRating'),    val: `${chainStats.avgRating ?? 0}★`,          sub: t('analytics.fiveBranches')   },
+                    { label: t('analytics.chainAvgRating'),    val: isRefreshing ? '…' : chainStats.avgRating > 0 ? `${chainStats.avgRating}★` : isLive ? '—' : `${chainStats.avgRating}★`, sub: t('analytics.fiveBranches') },
                     { label: t('analytics.positiveSentiment'), val: `${chainStats.positivePct ?? 0}%`,        sub: t('analytics.vsTarget')       },
                     { label: t('analytics.criticalBranchCount'), val: String(branches.filter(b => b.healthScore < 50).length), sub: t('analytics.fiveBranches') },
                   ].map(s => (

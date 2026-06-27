@@ -1,14 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   CircleDot, ArrowRight, TrendingUp, TrendingDown, Minus,
-  ChevronDown, ChevronUp, AlertTriangle, UploadCloud,
+  ChevronDown, ChevronUp, AlertTriangle, UploadCloud, Plus,
 } from 'lucide-react'
 import { useLang } from '@/lib/LangContext'
-import { issues as demoIssues, issueStats } from '@/data/issues'
+import { issues as demoIssues } from '@/data/issues'
 import { getActionsForIssue } from '@/data/actions'
 import type { IssueStatus, Priority } from '@/data/types'
 import { useLiveData } from '@/lib/useLiveData'
@@ -59,17 +59,36 @@ const STATUS_LABEL_VI: Record<string, string> = {
 
 type FilterStatus = IssueStatus | 'All'
 
+function slugify(name: string): string {
+  return name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-')
+}
+
 export default function IssuesPage() {
   const { lang, t } = useLang()
-  const router   = useRouter()
-  const vi       = lang === 'vi'
+  const router       = useRouter()
+  const searchParams = useSearchParams()
+  const vi           = lang === 'vi'
 
-  const { mode, issues: liveIssues } = useLiveData()
+  const { mode, issues: liveIssues, liveActions } = useLiveData()
   const isLive = mode === 'live'
-  const issues = isLive ? liveIssues : demoIssues
+  const issues = (isLive && liveIssues.length > 0) ? liveIssues : demoIssues
+
+  const highlightId  = searchParams.get('highlight')
+  const branchFilter = searchParams.get('branch')
 
   const [statusFilter, setStatusFilter] = useState<FilterStatus>('All')
-  const [expandedId,   setExpandedId]   = useState<string | null>(null)
+  const [expandedId,   setExpandedId]   = useState<string | null>(highlightId)
+  const highlightRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to highlighted issue when arriving from an Alert
+  useEffect(() => {
+    if (!highlightId) return
+    const timer = setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [highlightId])
 
   if (mode === 'empty') {
     return (
@@ -86,20 +105,30 @@ export default function IssuesPage() {
     )
   }
 
-  const filtered = statusFilter === 'All'
-    ? issues
-    : issues.filter(i => i.status === statusFilter)
+  // Apply status filter, then optionally filter by branch from URL param
+  const filtered = issues
+    .filter(i => statusFilter === 'All' || i.status === statusFilter)
+    .filter(i => !branchFilter ||
+      i.branchId === branchFilter ||
+      i.affectedBranches.some(b => b === branchFilter || slugify(b) === branchFilter)
+    )
 
-  const liveStats = isLive
-    ? { total: issues.length, open: issues.filter(i => i.status === 'Open').length, inProgress: 0, monitoring: 0, resolved: 0 }
-    : issueStats
+  // Single source of truth — computed from whichever issues array is being rendered
+  const stats = {
+    total:      issues.length,
+    critical:   issues.filter(i => i.priority === 'Critical').length,
+    open:       issues.filter(i => i.status === 'Open').length,
+    inProgress: issues.filter(i => i.status === 'In Progress').length,
+    monitoring: issues.filter(i => i.status === 'Monitoring').length,
+    resolved:   issues.filter(i => i.status === 'Resolved').length,
+  }
 
   const STATUS_TABS: { label: string; value: FilterStatus; count: number }[] = [
-    { label: t('common.all'),         value: 'All',         count: liveStats.total      },
-    { label: t('issues.open'),        value: 'Open',        count: liveStats.open       },
-    { label: t('issues.inProgress'),  value: 'In Progress', count: liveStats.inProgress },
-    { label: t('issues.monitoring'),  value: 'Monitoring',  count: liveStats.monitoring },
-    { label: t('issues.resolved'),    value: 'Resolved',    count: liveStats.resolved   },
+    { label: t('common.all'),         value: 'All',         count: stats.total      },
+    { label: t('issues.open'),        value: 'Open',        count: stats.open       },
+    { label: t('issues.inProgress'),  value: 'In Progress', count: stats.inProgress },
+    { label: t('issues.monitoring'),  value: 'Monitoring',  count: stats.monitoring },
+    { label: t('issues.resolved'),    value: 'Resolved',    count: stats.resolved   },
   ]
 
   return (
@@ -119,11 +148,11 @@ export default function IssuesPage() {
         </div>
         <div className="flex gap-3">
           <div className="bg-red-50 border border-red-200 rounded-2xl px-4 py-3 text-center min-w-[80px]">
-            <div className="text-2xl font-extrabold text-red-700">{issueStats.critical}</div>
+            <div className="text-2xl font-extrabold text-red-700">{stats.critical}</div>
             <div className="text-[10px] text-red-500 font-semibold">{t('critical')}</div>
           </div>
           <div className="bg-orange-50 border border-orange-200 rounded-2xl px-4 py-3 text-center min-w-[80px]">
-            <div className="text-2xl font-extrabold text-orange-700">{issueStats.open + issueStats.inProgress}</div>
+            <div className="text-2xl font-extrabold text-orange-700">{stats.open + stats.inProgress}</div>
             <div className="text-[10px] text-orange-500 font-semibold">{vi ? 'Đang mở' : 'Active'}</div>
           </div>
         </div>
@@ -158,12 +187,24 @@ export default function IssuesPage() {
         )}
 
         {filtered.map((issue, i) => {
-          const expanded = expandedId === issue.id
-          const linkedActions = getActionsForIssue(issue.id)
+          const expanded      = expandedId === issue.id
+          const isHighlighted = issue.id === highlightId
+          const linkedActions = isLive && liveActions.length > 0
+            ? liveActions.filter(a => a.issueId === issue.id)
+            : getActionsForIssue(issue.id)
+
+          const recUrl = issue.branchId ? `/recommendations?branch=${issue.branchId}` : '/recommendations'
+          const createActionUrl = `/actions?create=1&issueId=${issue.id}&issueCode=${issue.code}&issueTitle=${encodeURIComponent(vi ? (issue.titleVi ?? issue.title) : issue.title)}&priority=${issue.priority}&branchId=${issue.branchId ?? ''}`
 
           return (
-            <motion.div key={issue.id} variants={fade} transition={{ delay: i * 0.05 }}>
+            <motion.div
+              key={issue.id}
+              variants={fade}
+              transition={{ delay: i * 0.05 }}
+              ref={isHighlighted ? highlightRef : undefined}
+            >
               <div className={`bg-white rounded-2xl border shadow-card overflow-hidden transition-all ${
+                isHighlighted ? 'border-primary-400 ring-2 ring-primary-200' :
                 issue.priority === 'Critical' ? 'border-red-200' : 'border-gray-100'
               }`}>
                 {/* Issue header — always visible */}
@@ -297,7 +338,7 @@ export default function IssuesPage() {
                               <div className="flex items-center gap-2">
                                 <div className="text-xs font-bold text-slate-500">{action.progress}%</div>
                                 <button
-                                  onClick={() => router.push('/actions')}
+                                  onClick={() => router.push(`/actions?issueId=${issue.id}`)}
                                   className="text-[10px] font-bold text-primary-600 bg-primary-50 border border-primary-200 px-2 py-1 rounded-lg hover:bg-primary-100 transition-colors"
                                 >
                                   {vi ? 'Xem' : 'View'}
@@ -308,6 +349,25 @@ export default function IssuesPage() {
                         </div>
                       </div>
                     )}
+
+                    {/* View Recommendations + Create Action */}
+                    <div className="pt-2 border-t border-gray-100 flex flex-col gap-2">
+                      <button
+                        onClick={() => router.push(recUrl)}
+                        className="w-full flex items-center justify-center gap-2 border border-primary-200 text-primary-700 bg-primary-50 hover:bg-primary-100 text-sm font-semibold px-4 py-2 rounded-xl transition-all"
+                      >
+                        <TrendingUp size={14} />
+                        {vi ? 'Xem Khuyến nghị cho chi nhánh này' : 'View Recommendations for this Branch'}
+                        <ArrowRight size={13} />
+                      </button>
+                      <button
+                        onClick={() => router.push(createActionUrl)}
+                        className="w-full flex items-center justify-center gap-2 bg-primary-700 hover:bg-primary-600 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-all shadow-sm hover:shadow-md"
+                      >
+                        <Plus size={15} />
+                        {vi ? 'Tạo Action xử lý vấn đề này' : 'Create Action for this Issue'}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

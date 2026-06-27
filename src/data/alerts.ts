@@ -14,7 +14,7 @@ export const alerts: Alert[] = [
     change: '43/100 ↓',
     timestamp: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
     actionLabel: 'View Issue',
-    actionRoute: '/issues',
+    actionRoute: '/issues?highlight=iss-003',
   },
   {
     id: 'alert-2',
@@ -28,8 +28,8 @@ export const alerts: Alert[] = [
     metric: 'Wait complaints',
     change: '142 reviews',
     timestamp: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-    actionLabel: 'View Actions',
-    actionRoute: '/actions',
+    actionLabel: 'View Issue',
+    actionRoute: '/issues?highlight=iss-001',
   },
   {
     id: 'alert-3',
@@ -43,8 +43,8 @@ export const alerts: Alert[] = [
     metric: 'Health score',
     change: '48/100 ↓5',
     timestamp: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-    actionLabel: 'Investigate',
-    actionRoute: '/issues',
+    actionLabel: 'View Issue',
+    actionRoute: '/issues?highlight=iss-005',
   },
   {
     id: 'alert-4',
@@ -58,8 +58,8 @@ export const alerts: Alert[] = [
     metric: 'Service complaints',
     change: '24 reviews (48%)',
     timestamp: new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString(),
-    actionLabel: 'View Branch',
-    actionRoute: '/branch/lvl',
+    actionLabel: 'View Issue',
+    actionRoute: '/issues?highlight=iss-006',
   },
   {
     id: 'alert-5',

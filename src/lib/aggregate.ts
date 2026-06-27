@@ -20,7 +20,8 @@ export function healthScore(positivePct: number, negativePct: number): number {
 export function reviewsToMetrics(reviews: ProcessedReview[]): BranchMetrics[] {
   const groups = new Map<string, ProcessedReview[]>()
   for (const r of reviews) {
-    const key = r.branch_name?.trim() || 'N/A'
+    const key = r.branch_name?.trim()
+    if (!key) continue  // skip reviews with missing branch_name (avoids fake 'N/A' branch)
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key)!.push(r)
   }
@@ -29,15 +30,18 @@ export function reviewsToMetrics(reviews: ProcessedReview[]): BranchMetrics[] {
   const metrics: BranchMetrics[] = []
 
   for (const [branch_name, list] of Array.from(groups)) {
-    const total = list.length
-    const positive = list.filter(r => r.sentiment === 'positive').length
-    const negative = list.filter(r => r.sentiment === 'negative').length
+    const total    = list.length
+    const positive = list.filter(r => r.sentiment?.toLowerCase() === 'positive').length
+    const negative = list.filter(r => r.sentiment?.toLowerCase() === 'negative').length
     const neutral  = total - positive - negative
 
     const positivePct = total ? Math.round((positive / total) * 100) : 0
     const negativePct = total ? Math.round((negative / total) * 100) : 0
 
-    const ratings = list.map(r => r.rating).filter((v): v is number => typeof v === 'number' && !isNaN(v))
+    const ratings = list.map(r => {
+      const v = Number(r.rating)
+      return r.rating != null && r.rating !== ('' as unknown) && !isNaN(v) && v > 0 ? v : null
+    }).filter((v): v is number => v !== null)
     const avgRating = ratings.length
       ? Math.round((ratings.reduce((s, v) => s + v, 0) / ratings.length) * 10) / 10
       : 0
@@ -110,12 +114,21 @@ export function platformCounts(reviews: ProcessedReview[]): { name: string; valu
   return Array.from(counts.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value)
 }
 
-/** Top 3 categories appearing in negative reviews of a branch. */
+/** Top 3 categories appearing in negative reviews of a branch.
+ *  Sentiment field may be 'negative' OR 'Negative' depending on upload source. */
+function parseCategories(raw: unknown): CategoryKey[] {
+  if (Array.isArray(raw)) return raw as CategoryKey[]
+  if (typeof raw === 'string' && raw) {
+    try { return JSON.parse(raw) as CategoryKey[] } catch { return [] }
+  }
+  return []
+}
+
 function topNegativeCategories(list: ProcessedReview[]): CategoryKey[] {
   const counts = new Map<CategoryKey, number>()
   for (const r of list) {
-    if (r.sentiment !== 'negative') continue
-    for (const c of r.categories ?? []) {
+    if (r.sentiment?.toLowerCase() !== 'negative') continue
+    for (const c of parseCategories(r.categories)) {
       if (c === 'general') continue
       counts.set(c, (counts.get(c) ?? 0) + 1)
     }

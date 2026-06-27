@@ -8,7 +8,8 @@ import MobileNav from './MobileNav'
 import DemoBadge from './ui/DemoBadge'
 
 // Pages that always render sample data (not wired to live uploads).
-const DEMO_ROUTES = ['/ai-center', '/ask-ai', '/recommendations', '/actions', '/simulator', '/reports', '/research']
+// Pages that always render sample data regardless of Supabase state
+const DEMO_ROUTES = ['/ai-center', '/ask-ai', '/simulator', '/reports', '/research']
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)

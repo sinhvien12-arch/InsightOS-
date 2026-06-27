@@ -1,13 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { useRouter } from 'next/navigation'
-import { Zap, ArrowRight, User, Calendar, ChevronDown, ChevronUp, Clock, MessageSquare, BarChart2, Eye, Send } from 'lucide-react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Zap, ArrowRight, User, Calendar, ChevronDown, ChevronUp, Clock, MessageSquare, BarChart2, Eye, Send, Plus, X, CircleDot } from 'lucide-react'
 import { useLang } from '@/lib/LangContext'
-import { useLiveData } from '@/lib/useLiveData'
-import { actions, actionStats } from '@/data/actions'
-import type { ActionStatus, Priority, ActionComment } from '@/data/types'
+import { useLiveData, dbRowToAction } from '@/lib/useLiveData'
+import { actions as demoActions } from '@/data/actions'
+import { auth } from '@/lib/firebase'
+import type { ActionStatus, Priority, ActionComment, Action } from '@/data/types'
 
 const fade    = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } }
 const stagger = { show: { transition: { staggerChildren: 0.07 } } }
@@ -51,29 +52,200 @@ const PROGRESS_COLOR = (pct: number) => {
 
 type FilterStatus = ActionStatus | 'All'
 
+const BLANK_FORM = { title: '', priority: 'Medium' as Priority, owner: 'Manager', branchId: '', deadline: '', description: '', issueId: '', issueCode: '' }
+
 export default function ActionsPage() {
   const { lang, t } = useLang()
-  const router   = useRouter()
-  const vi       = lang === 'vi'
-  const { mode } = useLiveData()
-  const isLive   = mode === 'live'
+  const router       = useRouter()
+  const searchParams = useSearchParams()
+  const vi           = lang === 'vi'
+  const { mode, branches: liveBranches } = useLiveData()
+  const isLive = mode === 'live' || mode === 'empty'
 
+  const [localActions,   setLocalActions]   = useState<Action[]>(demoActions)
   const [statusFilter,   setStatusFilter]   = useState<FilterStatus>('All')
   const [expandedId,     setExpandedId]     = useState<string | null>(null)
   const [commentInputs,  setCommentInputs]  = useState<Record<string, string>>({})
-  const [extraComments,  setExtraComments]  = useState<Record<string, ActionComment[]>>({})
   const [activeTab,      setActiveTab]      = useState<Record<string, 'desc' | 'timeline' | 'impact' | 'notes'>>({})
+  const [editingStatus,  setEditingStatus]  = useState<Record<string, boolean>>({})
+  const [showNewAction,  setShowNewAction]  = useState(false)
+  const [newForm,        setNewForm]        = useState(BLANK_FORM)
+  const [creating,       setCreating]       = useState(false)
+  const [loadingActions, setLoadingActions] = useState(false)
 
-  const filtered = statusFilter === 'All'
-    ? actions
-    : actions.filter(a => a.status === statusFilter)
+  // Pre-fill form when arriving from Issues page via "Create Action"
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return
+    const issueId   = searchParams.get('issueId')   ?? ''
+    const issueCode = searchParams.get('issueCode') ?? ''
+    const issueTitle = decodeURIComponent(searchParams.get('issueTitle') ?? '')
+    const priority  = (searchParams.get('priority') ?? 'Medium') as Priority
+    const branchId  = searchParams.get('branchId')  ?? ''
+    setNewForm({ ...BLANK_FORM, title: issueTitle ? `Fix: ${issueTitle}` : '', priority, branchId, issueId, issueCode })
+    setShowNewAction(true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Fetch actions from API (Firebase-authed, bypasses Supabase RLS)
+  async function loadActions() {
+    setLoadingActions(true)
+    try {
+      const token = await auth.currentUser?.getIdToken()
+      if (!token) return
+      const res = await fetch('/api/actions', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return
+      const body = await res.json()
+      if (Array.isArray(body.actions)) {
+        setLocalActions(body.actions.map((row: Record<string, unknown>) => dbRowToAction(row)))
+      }
+    } catch {
+      // silent — keep demo data if API unavailable
+    } finally {
+      setLoadingActions(false)
+    }
+  }
+
+  // Load live actions when mode becomes live; fallback to demo otherwise
+  useEffect(() => {
+    if (isLive) {
+      loadActions()
+    } else if (mode !== 'checking') {
+      setLocalActions(demoActions)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLive, mode])
+
+  // ─── API helper ──────────────────────────────────────────────────────────
+
+  async function callApi(method: string, body: Record<string, unknown>): Promise<boolean> {
+    try {
+      const token = await auth.currentUser?.getIdToken()
+      if (!token) return false
+      const res = await fetch('/api/actions', {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        console.error('[Actions] API error:', (err as { error?: string }).error ?? res.status)
+      }
+      return res.ok
+    } catch (e) {
+      console.error('[Actions] callApi failed:', e)
+      return false
+    }
+  }
+
+  // ─── Mutations ───────────────────────────────────────────────────────────
+
+  async function handleStatusChange(id: string, status: ActionStatus) {
+    setLocalActions(prev => prev.map(a => a.id === id ? { ...a, status } : a))
+    setEditingStatus(prev => ({ ...prev, [id]: false }))
+    if (isLive) {
+      await callApi('PATCH', { id, status })
+    }
+  }
+
+  async function handleProgressChange(id: string, progress: number) {
+    if (isLive) await callApi('PATCH', { id, progress })
+  }
+
+  async function addComment(actionId: string) {
+    const text = commentInputs[actionId]?.trim()
+    if (!text) return
+    const newComment: ActionComment = {
+      id:      `cmt-${Date.now()}`,
+      author:  vi ? 'Quản lý' : 'Manager',
+      date:    new Date().toISOString().slice(0, 10),
+      text,
+      textVi:  text,
+    }
+    setLocalActions(prev => prev.map(a =>
+      a.id === actionId ? { ...a, comments: [...(a.comments ?? []), newComment] } : a
+    ))
+    setCommentInputs(prev => ({ ...prev, [actionId]: '' }))
+    if (isLive) await callApi('PATCH', { id: actionId, addComment: newComment })
+  }
+
+  async function handleCreateAction() {
+    if (!newForm.title.trim() || !newForm.deadline) return
+    setCreating(true)
+
+    const branchObj  = liveBranches.find(b => b.id === newForm.branchId)
+    const today      = new Date().toISOString().slice(0, 10)
+    const newAction: Action = {
+      id:             `local-${Date.now()}`,
+      issueId:        newForm.issueId,
+      issueCode:      newForm.issueCode,
+      title:          newForm.title,
+      titleVi:        newForm.title,
+      description:    newForm.description,
+      descriptionVi:  newForm.description,
+      owner:          newForm.owner || 'Manager',
+      branchId:       newForm.branchId || null,
+      branchName:     branchObj?.name || null,
+      priority:       newForm.priority,
+      status:         'Pending',
+      deadline:       newForm.deadline,
+      progress:       0,
+      expectedImpact: '',
+      tags:           [],
+      timeline:       [{ date: today, event: 'Action created', eventVi: 'Hành động được tạo', type: 'created' }],
+      comments:       [],
+    }
+
+    setLocalActions(prev => [newAction, ...prev])
+    setShowNewAction(false)
+    setNewForm(BLANK_FORM)
+    setCreating(false)
+
+    if (isLive) {
+      const ok = await callApi('POST', {
+        title:       newForm.title,
+        description: newForm.description,
+        owner:       newForm.owner || 'Manager',
+        issue_id:    newForm.issueId  || null,
+        issue_code:  newForm.issueCode || null,
+        branchId:    newForm.branchId || null,
+        branchName:  branchObj?.name  || null,
+        priority:    newForm.priority,
+        status:      'Pending',
+        deadline:    newForm.deadline,
+        progress:    0,
+        timeline: [{ date: today, event: 'Action created', eventVi: 'Hành động được tạo', type: 'created' }],
+      })
+      // Reload from API to get real DB ids and confirm persistence
+      if (ok) await loadActions()
+    }
+  }
+
+  // ─── Derived stats ────────────────────────────────────────────────────────
+
+  const displayStats = {
+    total:      localActions.length,
+    pending:    localActions.filter(a => a.status === 'Pending').length,
+    inProgress: localActions.filter(a => a.status === 'In Progress').length,
+    monitoring: localActions.filter(a => a.status === 'Monitoring').length,
+    done:       localActions.filter(a => a.status === 'Done').length,
+  }
+
+  const issueIdFilter = searchParams.get('issueId') ?? ''
+
+  const filtered = localActions.filter(a => {
+    const matchStatus = statusFilter === 'All' || a.status === statusFilter
+    const matchIssue  = !issueIdFilter || a.issueId === issueIdFilter
+    return matchStatus && matchIssue
+  })
 
   const STATUS_TABS: { label: string; value: FilterStatus; count: number }[] = [
-    { label: t('common.all'),         value: 'All',         count: actionStats.total      },
-    { label: t('actions.pending'),    value: 'Pending',     count: actionStats.pending    },
-    { label: t('actions.inProgress'), value: 'In Progress', count: actionStats.inProgress },
-    { label: t('actions.monitoring'), value: 'Monitoring',  count: actionStats.monitoring  },
-    { label: t('actions.done'),       value: 'Done',        count: actionStats.done       },
+    { label: t('common.all'),         value: 'All',         count: displayStats.total      },
+    { label: t('actions.pending'),    value: 'Pending',     count: displayStats.pending    },
+    { label: t('actions.inProgress'), value: 'In Progress', count: displayStats.inProgress },
+    { label: t('actions.monitoring'), value: 'Monitoring',  count: displayStats.monitoring  },
+    { label: t('actions.done'),       value: 'Done',        count: displayStats.done       },
   ]
 
   const PRIORITY_LABEL_VI: Record<string, string> = {
@@ -82,12 +254,21 @@ export default function ActionsPage() {
   const STATUS_LABEL_VI: Record<string, string> = {
     'Pending': 'Chờ xử lý', 'In Progress': 'Đang thực hiện', 'Done': 'Hoàn thành', 'Monitoring': 'Theo dõi',
   }
+  const STATUS_OPTIONS: ActionStatus[] = ['Pending', 'In Progress', 'Monitoring', 'Done']
 
   function formatDeadline(d: string) {
-    const date    = new Date(d)
-    const today   = new Date()
-    const diff    = Math.ceil((date.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-    const dateStr = date.toLocaleDateString(vi ? 'vi-VN' : 'en-GB', { day: 'numeric', month: 'short' })
+    if (!d) return { str: '—', color: 'text-slate-400' }
+    // Parse YYYY-MM-DD into local midnight (avoids UTC-shift issues with new Date(string))
+    const parts = d.split('-').map(Number)
+    if (parts.length !== 3 || parts.some(isNaN)) return { str: d, color: 'text-slate-400' }
+    const [y, m, day] = parts
+    const date  = new Date(y, m - 1, day)
+    const today = new Date(); today.setHours(0, 0, 0, 0); date.setHours(0, 0, 0, 0)
+    const diff  = Math.round((date.getTime() - today.getTime()) / 86_400_000)
+    // Manual month labels — avoids browser locale inconsistencies (e.g. "3/7" vs "20-6-2026")
+    const MO_VI = ['thg 1','thg 2','thg 3','thg 4','thg 5','thg 6','thg 7','thg 8','thg 9','thg 10','thg 11','thg 12']
+    const MO_EN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    const dateStr = vi ? `${day} ${MO_VI[m - 1]}` : `${day} ${MO_EN[m - 1]}`
     if (diff < 0)   return { str: vi ? `Trễ ${Math.abs(diff)} ngày` : `${Math.abs(diff)}d overdue`, color: 'text-red-600 font-bold' }
     if (diff === 0) return { str: vi ? 'Đến hạn hôm nay' : 'Due today', color: 'text-red-600 font-bold' }
     if (diff <= 3)  return { str: vi ? `Còn ${diff} ngày` : `${diff}d left`, color: 'text-amber-600 font-bold' }
@@ -100,23 +281,6 @@ export default function ActionsPage() {
     setActiveTab(prev => ({ ...prev, [id]: tab }))
   }
 
-  function addComment(actionId: string) {
-    const text = commentInputs[actionId]?.trim()
-    if (!text) return
-    const newComment: ActionComment = {
-      id: `new-${Date.now()}`,
-      author: vi ? 'Quản lý' : 'Manager',
-      date: new Date().toISOString().slice(0, 10),
-      text,
-      textVi: text,
-    }
-    setExtraComments(prev => ({
-      ...prev,
-      [actionId]: [...(prev[actionId] ?? []), newComment],
-    }))
-    setCommentInputs(prev => ({ ...prev, [actionId]: '' }))
-  }
-
   function getDaysRemaining(monitoring: { startDate: string; period: number }) {
     const start = new Date(monitoring.startDate)
     const end   = new Date(start)
@@ -127,6 +291,7 @@ export default function ActionsPage() {
 
   return (
     <motion.div variants={stagger} initial="hidden" animate="show" className="max-w-5xl mx-auto space-y-6">
+
       {/* Header */}
       <motion.div variants={fade} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
@@ -139,30 +304,61 @@ export default function ActionsPage() {
             isLive ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'
           }`}>
             <span className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-            {isLive
-              ? (vi ? 'Cảnh báo từ dữ liệu trực tiếp · Hành động cố định' : 'Alerts from live data · Actions are predefined')
+            {loadingActions
+            ? (vi ? 'Đang tải...' : 'Loading...')
+            : isLive
+              ? (vi ? 'Hành động từ database · Có thể chỉnh sửa' : 'Actions from database · Editable')
               : (vi ? 'Dữ liệu mẫu · Hành động cố định' : 'Demo data · Actions are predefined')}
           </span>
         </div>
-        <div className="flex gap-3">
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-center min-w-[80px]">
-            <div className="text-2xl font-extrabold text-amber-700">{actionStats.pending}</div>
-            <div className="text-[10px] text-amber-600 font-semibold">{t('actions.pending')}</div>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          {/* Stat boxes */}
+          <div className="flex gap-2 flex-wrap">
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-center min-w-[72px]">
+              <div className="text-xl font-extrabold text-amber-700">{displayStats.pending}</div>
+              <div className="text-[10px] text-amber-600 font-semibold">{t('actions.pending')}</div>
+            </div>
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3 text-center min-w-[72px]">
+              <div className="text-xl font-extrabold text-blue-700">{displayStats.inProgress}</div>
+              <div className="text-[10px] text-blue-600 font-semibold">{t('actions.inProgress')}</div>
+            </div>
+            <div className="bg-teal-50 border border-teal-200 rounded-2xl px-4 py-3 text-center min-w-[72px]">
+              <div className="text-xl font-extrabold text-teal-700">{displayStats.monitoring}</div>
+              <div className="text-[10px] text-teal-600 font-semibold">{t('actions.monitoring')}</div>
+            </div>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 text-center min-w-[72px]">
+              <div className="text-xl font-extrabold text-emerald-700">{displayStats.done}</div>
+              <div className="text-[10px] text-emerald-600 font-semibold">{t('actions.done')}</div>
+            </div>
           </div>
-          <div className="bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3 text-center min-w-[80px]">
-            <div className="text-2xl font-extrabold text-blue-700">{actionStats.inProgress}</div>
-            <div className="text-[10px] text-blue-600 font-semibold">{t('actions.inProgress')}</div>
-          </div>
-          <div className="bg-teal-50 border border-teal-200 rounded-2xl px-4 py-3 text-center min-w-[80px]">
-            <div className="text-2xl font-extrabold text-teal-700">{actionStats.monitoring}</div>
-            <div className="text-[10px] text-teal-600 font-semibold">{t('actions.monitoring')}</div>
-          </div>
-          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 text-center min-w-[80px]">
-            <div className="text-2xl font-extrabold text-emerald-700">{actionStats.done}</div>
-            <div className="text-[10px] text-emerald-600 font-semibold">{t('actions.done')}</div>
-          </div>
+          {/* New action button — only in live mode */}
+          {isLive && (
+            <button
+              onClick={() => setShowNewAction(true)}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold bg-primary-700 text-white px-4 py-2.5 rounded-xl hover:bg-primary-600 transition-colors whitespace-nowrap"
+            >
+              <Plus size={14} />
+              {vi ? 'Tạo hành động' : 'New Action'}
+            </button>
+          )}
         </div>
       </motion.div>
+
+      {/* Issue filter banner */}
+      {issueIdFilter && (
+        <motion.div variants={fade} className="flex items-center justify-between bg-primary-50 border border-primary-200 rounded-xl px-4 py-2.5">
+          <span className="text-xs font-semibold text-primary-700 flex items-center gap-1.5">
+            <CircleDot size={13} />
+            {vi ? `Lọc theo vấn đề: ${issueIdFilter}` : `Filtered by issue: ${issueIdFilter}`}
+          </span>
+          <button
+            onClick={() => router.push('/actions')}
+            className="text-xs font-semibold text-primary-500 hover:text-primary-700 underline transition-colors"
+          >
+            {vi ? 'Xóa bộ lọc' : 'Clear filter'}
+          </button>
+        </motion.div>
+      )}
 
       {/* Status filter tabs */}
       <motion.div variants={fade} className="flex gap-2 flex-wrap">
@@ -184,25 +380,42 @@ export default function ActionsPage() {
         ))}
       </motion.div>
 
+      {/* Empty state (live mode, no actions) */}
+      {isLive && localActions.length === 0 && (
+        <motion.div variants={fade} className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
+          <Zap size={36} className="text-slate-200 mx-auto mb-3" />
+          <h3 className="text-slate-700 font-semibold mb-1">{vi ? 'Chưa có hành động nào' : 'No actions yet'}</h3>
+          <p className="text-xs text-slate-400 mb-4">
+            {vi ? 'Tạo hành động đầu tiên để theo dõi tiến độ cải thiện' : 'Create your first action to track improvement progress'}
+          </p>
+          <button onClick={() => setShowNewAction(true)}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold bg-primary-700 text-white px-5 py-2.5 rounded-xl hover:bg-primary-600 transition-colors">
+            <Plus size={14} />
+            {vi ? 'Tạo hành động' : 'Create Action'}
+          </button>
+        </motion.div>
+      )}
+
       {/* Action list */}
       <div className="space-y-3">
-        {filtered.length === 0 && (
+        {filtered.length === 0 && localActions.length > 0 && (
           <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center text-slate-400">
             {t('actions.noActions')}
           </div>
         )}
 
         {filtered.map((action, i) => {
-          const expanded = expandedId === action.id
-          const deadline = formatDeadline(action.deadline)
-          const tab      = getTabFor(action.id)
-          const allComments = [...(action.comments ?? []), ...(extraComments[action.id] ?? [])]
+          const expanded    = expandedId === action.id
+          const deadline    = formatDeadline(action.deadline)
+          const tab         = getTabFor(action.id)
+          const allComments = action.comments ?? []
           const hasTimeline = (action.timeline?.length ?? 0) > 0
           const hasImpact   = (action.actualImpact?.length ?? 0) > 0 && (action.status === 'Done' || action.status === 'Monitoring')
           const hasMonitor  = !!action.monitoring
+          const isEditingStatus = editingStatus[action.id] ?? false
 
           return (
-            <motion.div key={action.id} variants={fade} transition={{ delay: i * 0.05 }}>
+            <motion.div key={action.id} variants={fade} transition={{ delay: i * 0.04 }}>
               <div className="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
                 {/* Action header */}
                 <div
@@ -212,13 +425,41 @@ export default function ActionsPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <span className="text-[11px] font-mono text-slate-400 font-bold">{action.issueCode}</span>
+                        {action.issueCode && (
+                          <span className="text-[11px] font-mono text-slate-400 font-bold">{action.issueCode}</span>
+                        )}
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${PRIORITY_BADGE[action.priority]}`}>
                           {vi ? PRIORITY_LABEL_VI[action.priority] : action.priority}
                         </span>
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STATUS_BADGE[action.status]}`}>
-                          {vi ? STATUS_LABEL_VI[action.status] : action.status}
-                        </span>
+
+                        {/* Status badge — clickable in live mode */}
+                        {isEditingStatus ? (
+                          <select
+                            autoFocus
+                            value={action.status}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => handleStatusChange(action.id, e.target.value as ActionStatus)}
+                            onBlur={() => setEditingStatus(prev => ({ ...prev, [action.id]: false }))}
+                            className="text-[10px] font-semibold px-2 py-0.5 rounded-full border border-blue-300 bg-blue-50 text-blue-700 cursor-pointer focus:outline-none"
+                          >
+                            {STATUS_OPTIONS.map(s => (
+                              <option key={s} value={s}>{vi ? STATUS_LABEL_VI[s] : s}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span
+                            onClick={e => {
+                              if (!isLive) return
+                              e.stopPropagation()
+                              setEditingStatus(prev => ({ ...prev, [action.id]: true }))
+                            }}
+                            title={isLive ? (vi ? 'Click để đổi trạng thái' : 'Click to change status') : undefined}
+                            className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STATUS_BADGE[action.status]} ${isLive ? 'cursor-pointer hover:opacity-70' : ''}`}
+                          >
+                            {vi ? STATUS_LABEL_VI[action.status] : action.status}
+                          </span>
+                        )}
+
                         {action.branchName && (
                           <span className="text-[10px] text-primary-700 bg-primary-50 border border-primary-200 px-2 py-0.5 rounded-full font-semibold">
                             {action.branchName.replace('Phê La ', '')}
@@ -267,9 +508,9 @@ export default function ActionsPage() {
                     {/* Sub-tabs */}
                     <div className="flex gap-0 border-b border-gray-100 px-5">
                       {([
-                        { key: 'desc',     label: vi ? 'Chi tiết' : 'Details',    show: true          },
-                        { key: 'timeline', label: vi ? 'Lịch sử' : 'Timeline',    show: hasTimeline   },
-                        { key: 'impact',   label: vi ? 'Kết quả' : 'Impact',      show: hasImpact     },
+                        { key: 'desc',     label: vi ? 'Chi tiết' : 'Details',    show: true        },
+                        { key: 'timeline', label: vi ? 'Lịch sử' : 'Timeline',    show: hasTimeline },
+                        { key: 'impact',   label: vi ? 'Kết quả' : 'Impact',      show: hasImpact   },
                         { key: 'notes',    label: vi ? 'Ghi chú' : 'Notes',       show: true, count: allComments.length },
                       ] as const).filter(s => s.show).map(s => (
                         <button
@@ -293,11 +534,38 @@ export default function ActionsPage() {
                       {/* DETAILS TAB */}
                       {tab === 'desc' && (
                         <>
+                          {/* Editable progress slider (live mode only) */}
+                          {isLive && (
+                            <div className="bg-white border border-gray-100 rounded-xl p-3 space-y-2" onClick={e => e.stopPropagation()}>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-500">{vi ? 'Tiến độ' : 'Progress'}</span>
+                                <span className="text-xs font-bold text-slate-700">{action.progress}%</span>
+                              </div>
+                              <input
+                                type="range" min={0} max={100} step={5}
+                                defaultValue={action.progress}
+                                onChange={e => {
+                                  const v = parseInt(e.target.value)
+                                  setLocalActions(prev => prev.map(a => a.id === action.id ? { ...a, progress: v } : a))
+                                }}
+                                onMouseUp={e => handleProgressChange(action.id, parseInt((e.target as HTMLInputElement).value))}
+                                onTouchEnd={e => handleProgressChange(action.id, parseInt((e.target as HTMLInputElement).value))}
+                                className="w-full h-2 rounded-full appearance-none cursor-pointer accent-primary-600"
+                              />
+                              <div className="flex justify-between text-[10px] text-slate-300">
+                                <span>0%</span><span>50%</span><span>100%</span>
+                              </div>
+                            </div>
+                          )}
+
                           <p className="text-sm text-slate-600">{vi ? (action.descriptionVi ?? action.description) : action.description}</p>
-                          <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
-                            <h4 className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1">{t('actions.impact')}</h4>
-                            <p className="text-sm text-emerald-700">{vi ? (action.expectedImpactVi ?? action.expectedImpact) : action.expectedImpact}</p>
-                          </div>
+
+                          {action.expectedImpact && (
+                            <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+                              <h4 className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1">{t('actions.impact')}</h4>
+                              <p className="text-sm text-emerald-700">{vi ? (action.expectedImpactVi ?? action.expectedImpact) : action.expectedImpact}</p>
+                            </div>
+                          )}
 
                           {/* Monitoring status panel */}
                           {hasMonitor && (
@@ -334,12 +602,14 @@ export default function ActionsPage() {
                                 <span key={tag} className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{tag}</span>
                               ))}
                             </div>
-                            <button
-                              onClick={() => router.push('/issues')}
-                              className="text-xs font-semibold text-primary-600 bg-primary-50 border border-primary-200 px-3 py-1.5 rounded-lg hover:bg-primary-100 transition-colors flex items-center gap-1"
-                            >
-                              {vi ? 'Xem vấn đề' : 'View Issue'} {action.issueCode} <ArrowRight size={11} />
-                            </button>
+                            {action.issueCode && (
+                              <button
+                                onClick={() => router.push(action.issueId ? `/issues?highlight=${action.issueId}` : '/issues')}
+                                className="text-xs font-semibold text-primary-600 bg-primary-50 border border-primary-200 px-3 py-1.5 rounded-lg hover:bg-primary-100 transition-colors flex items-center gap-1"
+                              >
+                                {vi ? 'Xem vấn đề' : 'View Issue'} {action.issueCode} <ArrowRight size={11} />
+                              </button>
+                            )}
                           </div>
                         </>
                       )}
@@ -353,7 +623,6 @@ export default function ActionsPage() {
                           <div className="relative pl-5">
                             {action.timeline!.map((ev, idx) => (
                               <div key={idx} className="relative mb-3 last:mb-0">
-                                {/* vertical line */}
                                 {idx < action.timeline!.length - 1 && (
                                   <div className="absolute left-[-13px] top-4 bottom-[-12px] w-px bg-gray-200" />
                                 )}
@@ -421,7 +690,6 @@ export default function ActionsPage() {
                               </div>
                             ))}
                           </div>
-                          {/* Add comment */}
                           <div className="flex gap-2" onClick={e => e.stopPropagation()}>
                             <input
                               value={commentInputs[action.id] ?? ''}
@@ -437,6 +705,12 @@ export default function ActionsPage() {
                               <Send size={12} />
                             </button>
                           </div>
+                          {isLive && (
+                            <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+                              {vi ? 'Ghi chú được lưu vào database' : 'Notes are saved to database'}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -447,6 +721,124 @@ export default function ActionsPage() {
           )
         })}
       </div>
+
+      {/* New Action Modal */}
+      {showNewAction && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => setShowNewAction(false)}
+        >
+          <div
+            className="bg-white rounded-2xl p-6 w-full max-w-md space-y-4 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">{vi ? 'Tạo hành động mới' : 'New Action'}</h2>
+              <button onClick={() => { setShowNewAction(false); setNewForm(BLANK_FORM) }} className="text-slate-400 hover:text-slate-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Linked issue badge */}
+            {newForm.issueCode && (
+              <div className="flex items-center gap-2 bg-primary-50 border border-primary-200 rounded-xl px-3 py-2">
+                <CircleDot size={13} className="text-primary-600 flex-shrink-0" />
+                <span className="text-xs text-primary-700 font-semibold">
+                  {vi ? 'Liên kết với vấn đề:' : 'Linked to issue:'} <span className="font-mono">{newForm.issueCode}</span>
+                </span>
+              </div>
+            )}
+
+            <div>
+              <label className="text-xs font-semibold text-slate-500 block mb-1">{vi ? 'Tiêu đề *' : 'Title *'}</label>
+              <input
+                autoFocus
+                value={newForm.title}
+                onChange={e => setNewForm(p => ({ ...p, title: e.target.value }))}
+                placeholder={vi ? 'Tên hành động...' : 'Action title...'}
+                className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-slate-500 block mb-1">{vi ? 'Ưu tiên' : 'Priority'}</label>
+                <select
+                  value={newForm.priority}
+                  onChange={e => setNewForm(p => ({ ...p, priority: e.target.value as Priority }))}
+                  className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent bg-white"
+                >
+                  <option value="Critical">Critical</option>
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 block mb-1">{vi ? 'Hạn chót *' : 'Deadline *'}</label>
+                <input
+                  type="date"
+                  value={newForm.deadline}
+                  onChange={e => setNewForm(p => ({ ...p, deadline: e.target.value }))}
+                  className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-500 block mb-1">{vi ? 'Người phụ trách' : 'Owner'}</label>
+              <input
+                value={newForm.owner}
+                onChange={e => setNewForm(p => ({ ...p, owner: e.target.value }))}
+                className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent"
+              />
+            </div>
+
+            {liveBranches.length > 0 && (
+              <div>
+                <label className="text-xs font-semibold text-slate-500 block mb-1">{vi ? 'Chi nhánh (tuỳ chọn)' : 'Branch (optional)'}</label>
+                <select
+                  value={newForm.branchId}
+                  onChange={e => setNewForm(p => ({ ...p, branchId: e.target.value }))}
+                  className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent bg-white"
+                >
+                  <option value="">{vi ? '— Không chọn —' : '— None —'}</option>
+                  {liveBranches.map(b => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label className="text-xs font-semibold text-slate-500 block mb-1">{vi ? 'Mô tả (tuỳ chọn)' : 'Description (optional)'}</label>
+              <textarea
+                value={newForm.description}
+                onChange={e => setNewForm(p => ({ ...p, description: e.target.value }))}
+                rows={3}
+                placeholder={vi ? 'Chi tiết hành động cần thực hiện...' : 'Details about what needs to be done...'}
+                className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-transparent resize-none"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => setShowNewAction(false)}
+                className="flex-1 text-sm font-semibold text-slate-600 border border-gray-200 px-4 py-2.5 rounded-xl hover:bg-gray-50 transition-colors"
+              >
+                {vi ? 'Huỷ' : 'Cancel'}
+              </button>
+              <button
+                onClick={handleCreateAction}
+                disabled={!newForm.title.trim() || !newForm.deadline || creating}
+                className="flex-1 text-sm font-semibold bg-primary-700 text-white px-4 py-2.5 rounded-xl hover:bg-primary-600 transition-colors disabled:opacity-50"
+              >
+                {creating ? '...' : (vi ? 'Tạo' : 'Create')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </motion.div>
   )
 }

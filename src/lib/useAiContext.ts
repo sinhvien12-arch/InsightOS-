@@ -6,6 +6,7 @@ import { buildContext, type CtxBranch, type CtxReview } from './aiContext'
 import { branches as demoBranches, chainStats as demoChainStats, getBranch } from '@/data/branches'
 import { reviews as demoReviews } from '@/data/reviews'
 import type { Branch } from '@/data/types'
+import type { BranchMetrics } from './uploadTypes'
 
 const toCtxBranch = (b: Branch): CtxBranch => ({
   name:          b.name,
@@ -22,11 +23,13 @@ export interface AiContextResult {
   chainStats:    { totalReviews: number; avgHealthScore: number; avgRating: number; positivePct: number; negativePct: number }
   criticalCount: number
   topIssueLabel: string
+  metrics:       BranchMetrics[]
+  liveBranches:  Branch[]
 }
 
 /** Builds the AI data-context string + quick stats from live (Supabase) or demo data. */
 export function useAiContext(): AiContextResult {
-  const { mode, branches: liveBranches, chainStats: liveChain, reviews: liveReviews } = useLiveData()
+  const { mode, metrics, branches: liveBranches, chainStats: liveChain, reviews: liveReviews } = useLiveData()
   const isLive = mode === 'live'
 
   return useMemo(() => {
@@ -51,7 +54,7 @@ export function useAiContext(): AiContextResult {
     for (const b of srcBranches) for (const p of b.topPainPoints) painTotals.set(p.label, (painTotals.get(p.label) ?? 0) + p.count)
     const topIssueLabel = Array.from(painTotals.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—'
 
-    return { context, mode: ctxMode, chainStats, criticalCount, topIssueLabel }
+    return { context, mode: ctxMode, chainStats, criticalCount, topIssueLabel, metrics, liveBranches }
     // Re-derive when the live dataset's content shifts (not just row count).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLive, liveReviews.length, liveChain.totalReviews, liveChain.avgHealthScore, liveChain.positivePct, liveChain.negativePct])

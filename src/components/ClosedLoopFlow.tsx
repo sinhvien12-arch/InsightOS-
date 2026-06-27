@@ -3,6 +3,7 @@
 import { AlertCircle, Brain, Zap, Wrench, BarChart2, Eye, TrendingUp, ChevronRight } from 'lucide-react'
 import { useLang } from '@/lib/LangContext'
 import { closedLoopSteps, closedLoopStats } from '@/data/closedLoop'
+import type { ClosedLoopStep } from '@/data/closedLoop'
 
 const ICONS = [AlertCircle, Brain, Zap, Wrench, BarChart2, Eye, TrendingUp]
 
@@ -16,13 +17,55 @@ const COLOR_MAP: Record<string, { bg: string; icon: string; badge: string; bar: 
   emerald: { bg: 'bg-emerald-50', icon: 'text-emerald-600', badge: 'bg-emerald-100 text-emerald-700', bar: 'bg-emerald-500' },
 }
 
-interface Props {
-  compact?: boolean
+export interface LiveLoopStats {
+  issuesDetected:     number
+  recsGenerated:      number
+  actionsAssigned:    number
+  actionsImplemented: number
+  actionsMonitoring:  number
+  actionsImproved:    number
 }
 
-export default function ClosedLoopFlow({ compact = false }: Props) {
+interface Props {
+  compact?:   boolean
+  liveStats?: LiveLoopStats | null
+}
+
+export default function ClosedLoopFlow({ compact = false, liveStats }: Props) {
   const { t, lang } = useLang()
   const vi = lang === 'vi'
+
+  // Merge live counts into steps when provided
+  const LIVE_COUNT_MAP = liveStats
+    ? [
+        liveStats.issuesDetected,
+        liveStats.recsGenerated,
+        liveStats.actionsAssigned,
+        liveStats.actionsImplemented,
+        liveStats.actionsMonitoring,
+        liveStats.actionsMonitoring,
+        liveStats.actionsImproved,
+      ]
+    : null
+
+  const steps = LIVE_COUNT_MAP
+    ? closedLoopSteps.map((s, i) => {
+        const c = LIVE_COUNT_MAP[i] ?? 0
+        const status: ClosedLoopStep['status'] =
+          c > 0 ? (i <= 3 ? 'complete' : 'active') : 'pending'
+        return { ...s, count: c, status }
+      })
+    : closedLoopSteps
+
+  const activeCount = steps.filter(s => s.status !== 'pending').length
+  const stats = liveStats
+    ? {
+        ...closedLoopStats,
+        actionsImproved: liveStats.actionsImproved,
+        stagesActive:    activeCount,
+        coveragePct:     Math.round((activeCount / steps.length) * 100),
+      }
+    : closedLoopStats
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-card p-5">
@@ -35,14 +78,14 @@ export default function ClosedLoopFlow({ compact = false }: Props) {
           )}
         </div>
         <div className="text-right">
-          <div className="text-xl font-extrabold text-primary-700">{closedLoopStats.coveragePct}%</div>
+          <div className="text-xl font-extrabold text-primary-700">{stats.coveragePct}%</div>
           <div className="text-[10px] text-slate-400">{t('loop.coverage')}</div>
         </div>
       </div>
 
       {/* Steps */}
       <div className="flex items-stretch gap-0 overflow-x-auto pb-1">
-        {closedLoopSteps.map((step, i) => {
+        {steps.map((step, i) => {
           const Icon = ICONS[i]
           const c = COLOR_MAP[step.color]
           const isLast = i === closedLoopSteps.length - 1
@@ -89,16 +132,16 @@ export default function ClosedLoopFlow({ compact = false }: Props) {
         <div className="mt-4 pt-3 border-t border-gray-50">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[11px] text-slate-500">
-              {closedLoopStats.stagesActive} {t('loop.stagesActive')} · {closedLoopStats.coveragePct}% {t('loop.coverage')}
+              {stats.stagesActive} {t('loop.stagesActive')} · {stats.coveragePct}% {t('loop.coverage')}
             </span>
             <span className="text-[11px] font-semibold text-emerald-600">
-              {closedLoopStats.actionsImproved} {t('loop.confirmed')} {t('loop.improvement')}
+              {stats.actionsImproved} {t('loop.confirmed')} {t('loop.improvement')}
             </span>
           </div>
           <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-red-400 via-blue-400 to-emerald-500 rounded-full transition-all duration-700"
-              style={{ width: `${closedLoopStats.coveragePct}%` }}
+              style={{ width: `${stats.coveragePct}%` }}
             />
           </div>
         </div>

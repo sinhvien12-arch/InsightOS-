@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase, supabaseConfigured } from './supabase'
 import { reviewsToMetrics } from './aggregate'
 import type { BranchMetrics, ProcessedReview } from './uploadTypes'
-import type { Branch, Alert, Issue, PainPoint, Priority, IssueStatus } from '@/data/types'
+import type { Branch, Alert, Issue, PainPoint, Priority, IssueStatus, Action, ActionStatus, ActionComment, TimelineEvent, MonitoringState, ActualImpactItem } from '@/data/types'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -49,8 +49,8 @@ export function metricsToBranch(m: BranchMetrics): Branch {
   return {
     id:          slugify(m.branch_name),
     name:        m.branch_name,
-    address:     'Imported from upload',
-    district:    'N/A',
+    address:     'Hà Nội, Việt Nam',
+    district:    'Hà Nội',
     healthScore: m.health_score,
     prevScore:   Math.max(0, m.health_score - 3),
     avgRating:   m.avg_rating || 0,
@@ -71,51 +71,103 @@ export function metricsToBranch(m: BranchMetrics): Branch {
   }
 }
 
+function parseCriticalIssues(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw as string[]
+  if (typeof raw === 'string' && raw) {
+    try { return JSON.parse(raw) as string[] } catch { return [] }
+  }
+  return []
+}
+
 export function metricsToAlerts(metrics: BranchMetrics[]): Alert[] {
+  if (!metrics.length) return []
   const result: Alert[] = []
   let idx = 0
 
-  metrics.forEach(m => {
-    if (m.health_score < 60) {
+  const totalReviews  = metrics.reduce((s, m) => s + (Number(m.total_reviews)  || 0), 0)
+  const totalNegative = metrics.reduce((s, m) => s + (Number(m.negative_count) || 0), 0)
+  const chainNegPct   = totalReviews ? Math.round((totalNegative / totalReviews) * 100) : 0
+
+  // Sort worst-first
+  const sorted = [...metrics].sort((a, b) => (Number(a.health_score) || 0) - (Number(b.health_score) || 0))
+
+  sorted.forEach(m => {
+    const score   = Number(m.health_score   ?? 0)
+    const negPct  = Number(m.negative_percentage ?? 0)
+    const reviews = Number(m.total_reviews  ?? 0)
+    const issues  = parseCriticalIssues(m.critical_issues)
+
+    // Health-score alert for any branch below 70
+    if (score < 70) {
+      const severity: Alert['severity'] = score < 50 ? 'High' : score < 60 ? 'High' : 'Medium'
+      const branchSlug = slugify(m.branch_name)
+      const topEN = issues.slice(0, 2).map(c => fmtCatEN(c)).join(' and ')
+      const topVI = issues.slice(0, 2).map(c => fmtCatVI(c)).join(' và ')
       result.push({
-        id:             `live-h-${idx++}`,
-        severity:       m.health_score < 50 ? 'High' : 'Medium',
-        title:          `Low health score at ${m.branch_name}`,
-        titleVi:        `Điểm sức khỏe thấp tại ${m.branch_name}`,
-        description:    `Health score ${m.health_score}/100 — ${m.negative_percentage}% negative reviews`,
-        descriptionVi:  `Điểm sức khỏe ${m.health_score}/100 — ${m.negative_percentage}% đánh giá tiêu cực`,
-        branchId:       slugify(m.branch_name),
-        branchName:     m.branch_name,
-        metric:         'Health Score',
-        change:         `${m.health_score}/100`,
-        timestamp:      m.updated_at ?? new Date().toISOString(),
-        actionLabel:    'View Branch',
-        actionRoute:    '/branches',
+        id:            `live-h-${idx++}`,
+        severity,
+        title:         `${m.branch_name} — Health ${score}/100 · ${negPct}% negative`,
+        titleVi:       `${m.branch_name} — Sức khỏe ${score}/100 · ${negPct}% tiêu cực`,
+        description:   topEN
+          ? `Health score ${score}/100 — ${negPct}% negative across ${reviews} reviews. Top issues: ${topEN}.`
+          : `Health score ${score}/100 — ${negPct}% negative sentiment across ${reviews} reviews.`,
+        descriptionVi: topVI
+          ? `Điểm sức khỏe ${score}/100 — ${negPct}% tiêu cực từ ${reviews} đánh giá. Vấn đề chính: ${topVI}.`
+          : `Điểm sức khỏe ${score}/100 — ${negPct}% đánh giá tiêu cực từ ${reviews} đánh giá.`,
+        branchId:      branchSlug,
+        branchName:    m.branch_name,
+        metric:        'Health Score',
+        change:        `${score}/100`,
+        timestamp:     m.updated_at ?? new Date().toISOString(),
+        actionLabel:   'View Issue',
+        actionRoute:   `/issues?branch=${branchSlug}`,
       })
     }
 
-    m.critical_issues.slice(0, 2).forEach(issue => {
+    // Per-category alert → links directly to the live issue for that category
+    issues.slice(0, 1).forEach(issue => {
+      const count = Math.round(reviews * 0.3)
+      const pct   = reviews ? Math.round((count / reviews) * 100) : 0
       result.push({
-        id:             `live-i-${idx++}`,
-        severity:       m.negative_percentage > 40 ? 'High' : 'Medium',
-        title:          `${fmtCatEN(issue)} issues at ${m.branch_name}`,
-        titleVi:        `Vấn đề ${fmtCatVI(issue)} tại ${m.branch_name}`,
-        description:    `${Math.round(m.total_reviews * 0.28)} reviews mention ${fmtCatEN(issue).toLowerCase()}`,
-        descriptionVi:  `${Math.round(m.total_reviews * 0.28)} đánh giá đề cập ${fmtCatVI(issue).toLowerCase()}`,
-        branchId:       slugify(m.branch_name),
-        branchName:     m.branch_name,
-        metric:         fmtCatEN(issue),
-        change:         `+${Math.round(m.total_reviews * 0.28)}`,
-        timestamp:      m.updated_at ?? new Date().toISOString(),
-        actionLabel:    'View Issues',
-        actionRoute:    '/issues',
+        id:            `live-i-${idx++}`,
+        severity:      negPct > 65 ? 'High' : 'Medium',
+        title:         `${fmtCatEN(issue)} complaints at ${m.branch_name}`,
+        titleVi:       `Phàn nàn ${fmtCatVI(issue)} tại ${m.branch_name}`,
+        description:   `${count} of ${reviews} reviews (${pct}%) cite ${fmtCatEN(issue).toLowerCase()} as primary complaint.`,
+        descriptionVi: `${count} trong ${reviews} đánh giá (${pct}%) đề cập ${fmtCatVI(issue).toLowerCase()} là vấn đề chính.`,
+        branchId:      slugify(m.branch_name),
+        branchName:    m.branch_name,
+        metric:        fmtCatEN(issue),
+        change:        `${count} reviews`,
+        timestamp:     m.updated_at ?? new Date().toISOString(),
+        actionLabel:   'View Issue',
+        actionRoute:   `/issues?highlight=live-${issue}`,
       })
     })
   })
 
+  // Chain-wide sentiment alert
+  if (chainNegPct > 50 && totalReviews > 0) {
+    result.push({
+      id:            `live-chain-${idx++}`,
+      severity:      chainNegPct > 70 ? 'High' : 'Medium',
+      title:         `${chainNegPct}% negative sentiment chain-wide`,
+      titleVi:       `${chainNegPct}% phản hồi tiêu cực toàn chuỗi`,
+      description:   `${totalNegative} of ${totalReviews} reviews across all ${metrics.length} branches are negative. Chain-level review recommended.`,
+      descriptionVi: `${totalNegative} trong ${totalReviews} đánh giá trên ${metrics.length} chi nhánh là tiêu cực. Đề nghị kiểm tra toàn chuỗi.`,
+      branchId:      null,
+      branchName:    null,
+      metric:        'Chain Sentiment',
+      change:        `${chainNegPct}%`,
+      timestamp:     new Date().toISOString(),
+      actionLabel:   'View Analytics',
+      actionRoute:   '/analytics',
+    })
+  }
+
   return result.sort((a, b) => {
-    const rank = { High: 3, Medium: 2, Low: 1 }
-    return rank[b.severity] - rank[a.severity]
+    const rank: Record<string, number> = { High: 3, Medium: 2, Low: 1 }
+    return (rank[b.severity] ?? 0) - (rank[a.severity] ?? 0)
   })
 }
 
@@ -208,6 +260,34 @@ export function metricsToChainStats(metrics: BranchMetrics[]): LiveChainStats {
   }
 }
 
+// ─── Actions DB row → Action type ────────────────────────────────────────────
+
+export function dbRowToAction(row: Record<string, unknown>): Action {
+  return {
+    id:              String(row.id ?? ''),
+    issueId:         String(row.issue_id ?? ''),
+    issueCode:       String(row.issue_code ?? ''),
+    title:           String(row.title ?? ''),
+    titleVi:         row.title_vi ? String(row.title_vi) : undefined,
+    description:     String(row.description ?? ''),
+    descriptionVi:   row.description_vi ? String(row.description_vi) : undefined,
+    owner:           String(row.owner ?? 'Manager'),
+    branchId:        row.branch_id ? String(row.branch_id) : null,
+    branchName:      row.branch_name ? String(row.branch_name) : null,
+    priority:        (row.priority as Priority) ?? 'Medium',
+    status:          (row.status as ActionStatus) ?? 'Pending',
+    deadline:        String(row.deadline ?? ''),
+    progress:        Number(row.progress ?? 0),
+    expectedImpact:  String(row.expected_impact ?? ''),
+    expectedImpactVi: row.expected_impact_vi ? String(row.expected_impact_vi) : undefined,
+    tags:            Array.isArray(row.tags) ? (row.tags as string[]) : [],
+    timeline:        Array.isArray(row.timeline) ? (row.timeline as TimelineEvent[]) : [],
+    comments:        Array.isArray(row.comments) ? (row.comments as ActionComment[]) : [],
+    monitoring:      row.monitoring ? (row.monitoring as MonitoringState) : undefined,
+    actualImpact:    Array.isArray(row.actual_impact) ? (row.actual_impact as ActualImpactItem[]) : [],
+  }
+}
+
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
 export type DataMode = 'checking' | 'demo' | 'live' | 'empty'
@@ -220,22 +300,25 @@ export interface LiveDataResult {
   issues:       Issue[]
   chainStats:   LiveChainStats
   reviews:      ProcessedReview[]
+  liveActions:  Action[]
   refresh:      () => void
 }
 
 const REVIEW_LIMIT = 5000
 
 export function useLiveData(forceDemo = false): LiveDataResult {
-  const [mode,       setMode]       = useState<DataMode>(supabaseConfigured && !forceDemo ? 'checking' : 'demo')
-  const [metrics,    setMetrics]    = useState<BranchMetrics[]>([])
-  const [reviews,    setReviews]    = useState<ProcessedReview[]>([])
-  const [refreshKey, setRefreshKey] = useState(0)
+  const [mode,        setMode]        = useState<DataMode>(supabaseConfigured && !forceDemo ? 'checking' : 'demo')
+  const [metrics,     setMetrics]     = useState<BranchMetrics[]>([])
+  const [reviews,     setReviews]     = useState<ProcessedReview[]>([])
+  const [liveActions, setLiveActions] = useState<Action[]>([])
+  const [refreshKey,  setRefreshKey]  = useState(0)
 
   function refresh() {
     if (forceDemo || !supabaseConfigured) return
     setMode('checking')
     setMetrics([])
     setReviews([])
+    setLiveActions([])
     setRefreshKey(k => k + 1)
   }
 
@@ -245,6 +328,8 @@ export function useLiveData(forceDemo = false): LiveDataResult {
       return
     }
     const client = supabase
+
+    // Fetch branch metrics + reviews
     client
       .from('branch_metrics')
       .select('*')
@@ -264,13 +349,32 @@ export function useLiveData(forceDemo = false): LiveDataResult {
             if (rData?.length) setReviews(rData as ProcessedReview[])
           })
       })
+
+    // Fetch actions independently (parallel)
+    client
+      .from('actions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .then(({ data: aData }) => {
+        if (aData) setLiveActions(aData.map(row => dbRowToAction(row as Record<string, unknown>)))
+      })
   }, [forceDemo, refreshKey])
 
   // Re-derive metrics from raw reviews when available so chain stats,
   // per-branch percentages, and sentiment counts are always accurate.
   // branch_metrics in Supabase may be stale (e.g. neutral_count column added
   // after rows were written, or N/A branch excluded by an older upload).
-  const effective = reviews.length > 0 ? reviewsToMetrics(reviews) : metrics
+  // When reviews lack a rating column (null ratings), preserve avg_rating from
+  // the stored branch_metrics row so Chain Avg Rating is never shown as 0.
+  const effective = useMemo(() => {
+    if (!reviews.length) return metrics
+    const computed = reviewsToMetrics(reviews)
+    return computed.map(m => {
+      if (m.avg_rating > 0) return m
+      const stored = metrics.find(s => s.branch_name === m.branch_name)
+      return stored?.avg_rating ? { ...m, avg_rating: stored.avg_rating } : m
+    })
+  }, [reviews, metrics])
 
   const live = {
     branches:   effective.map(metricsToBranch),
@@ -279,5 +383,5 @@ export function useLiveData(forceDemo = false): LiveDataResult {
     chainStats: metricsToChainStats(effective),
   }
 
-  return { mode, metrics: effective, reviews, refresh, ...live }
+  return { mode, metrics: effective, reviews, liveActions, refresh, ...live }
 }

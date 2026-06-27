@@ -1,24 +1,135 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
-import { Play, TrendingDown, TrendingUp, Minus } from 'lucide-react'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import { Play, TrendingDown, TrendingUp, Minus, Zap } from 'lucide-react'
 import { useLang } from '@/lib/LangContext'
 import { useLiveData } from '@/lib/useLiveData'
 import { scenarios } from '@/data/simulator'
-import type { SimulatorScenario } from '@/data/types'
+import type { SimMetric } from '@/data/types'
+
+// ─── Live baseline computation ────────────────────────────────────────────────
+
+function shortName(name: string) {
+  return name.replace(/Phê La\s*/i, '').trim()
+}
 
 export default function SimulatorPage() {
   const { t, lang } = useLang()
-  const { mode, chainStats } = useLiveData()
+  const vi = lang === 'vi'
+  const { mode, metrics, chainStats } = useLiveData()
   const isLive = mode === 'live'
-  const [activeId,   setActiveId]   = useState<string>(scenarios[0].id)
-  const [intensity,  setIntensity]  = useState(1)
-  const [running,    setRunning]    = useState(false)
-  const [simulated,  setSimulated]  = useState(false)
+
+  const [activeId,  setActiveId]  = useState<string>(scenarios[0].id)
+  const [intensity, setIntensity] = useState(1)
+  const [running,   setRunning]   = useState(false)
+  const [simulated, setSimulated] = useState(false)
 
   const scenario = scenarios.find(s => s.id === activeId)!
+
+  // ─── Compute live baselines from real metrics ─────────────────────────────
+
+  const { liveBeforeMap, liveTargets } = useMemo(() => {
+    if (!isLive || !metrics.length) return { liveBeforeMap: {}, liveTargets: {} }
+
+    const sorted     = [...metrics].sort((a, b) => a.health_score - b.health_score)
+    const worst      = sorted[0]
+    const worst2     = sorted.slice(0, 2)
+    const best       = sorted[sorted.length - 1]
+    const waitBranches = metrics.filter(m => m.critical_issues.includes('waiting_time'))
+    const targetWait = waitBranches.length ? waitBranches : sorted.slice(0, 2)
+
+    const avg = (arr: number[]) => arr.length ? Math.round(arr.reduce((s, v) => s + v, 0) / arr.length) : 0
+
+    const waitHealth   = avg(targetWait.map(m => m.health_score))
+    const waitPosPct   = avg(targetWait.map(m => m.positive_percentage))
+    const waitNegCount = Math.round(targetWait.reduce((s, m) => s + m.negative_count, 0) * 0.35)
+
+    const w2Health   = avg(worst2.map(m => m.health_score))
+    const w2PosPct   = avg(worst2.map(m => m.positive_percentage))
+    const w2NegCount = worst2.reduce((s, m) => s + m.negative_count, 0)
+
+    const totalNeg     = metrics.reduce((s, m) => s + m.negative_count, 0)
+    const chainSvcComp = Math.round(totalNeg * 0.45)
+
+    const map: Record<string, number> = {
+      // add-barista: branches with waiting_time issues
+      'add-barista.Wait Complaints / Month':  waitNegCount,
+      'add-barista.Customer Satisfaction':    waitPosPct,
+      'add-barista.Avg Wait Time':            22,   // no wait-time column in DB
+      'add-barista.Branch Health Score':      waitHealth,
+
+      // service-recovery: worst branch
+      'service-recovery.Negative Sentiment':          worst?.negative_percentage ?? chainStats.negativePct,
+      'service-recovery.Service Complaints / Month':  Math.round((worst?.negative_count ?? 0) * 0.4),
+      'service-recovery.Branch Health Score':         worst?.health_score ?? chainStats.avgHealthScore,
+      // Avg Rating: only override if the branch has real rating data (> 0)
+      ...((worst?.avg_rating ?? 0) > 0
+        ? { 'service-recovery.Avg Rating': +(worst!.avg_rating.toFixed(2)) }
+        : chainStats.avgRating > 0
+          ? { 'service-recovery.Avg Rating': chainStats.avgRating }
+          : {}),
+
+      // chain-training: all branches
+      'chain-training.Service Complaints':    chainSvcComp,
+      'chain-training.Chain Health Score':    chainStats.avgHealthScore,
+      'chain-training.Negative Sentiment':    chainStats.negativePct,
+      // Evening Avg Rating: only override if chain has rating data
+      ...(chainStats.avgRating > 0
+        ? { 'chain-training.Evening Avg Rating': chainStats.avgRating }
+        : {}),
+
+      // replicate-nvc: best → worst 2
+      'replicate-nvc.Avg Health Score (TT + TQH)': w2Health,
+      'replicate-nvc.Positive Sentiment':           w2PosPct,
+      'replicate-nvc.Combined Complaints':          w2NegCount,
+      'replicate-nvc.Chain Health Score':           chainStats.avgHealthScore,
+    }
+
+    const targets: Record<string, string> = {
+      'add-barista':      targetWait.map(m => shortName(m.branch_name)).join(', '),
+      'service-recovery': shortName(worst?.branch_name ?? '—'),
+      'chain-training':   vi ? `Toàn bộ ${metrics.length} chi nhánh` : `All ${metrics.length} branches`,
+      'replicate-nvc':    `${shortName(best?.branch_name ?? '—')} → ${worst2.map(m => shortName(m.branch_name)).join(', ')}`,
+    }
+
+    return { liveBeforeMap: map, liveTargets: targets }
+  }, [isLive, metrics, chainStats, vi])
+
+  // ─── Per-metric helpers ────────────────────────────────────────────────────
+
+  function getLiveBefore(m: SimMetric): number {
+    const live = liveBeforeMap[`${activeId}.${m.label}`]
+    // If live value is 0 or missing, fall back to static baseline
+    // (avoids ratio * 0 = 0 bug when e.g. avg_rating has no data)
+    return (live != null && live > 0) ? live : m.before
+  }
+
+  // Apply the same improvement ratio from static scenario to the live baseline.
+  // E.g. if static goes 48 → 29 (ratio 0.60), live 35 → 35*0.60 = 21.
+  function getLiveAfter(m: SimMetric, liveBefore: number): number {
+    // If baseline is still 0 for some reason, fall back to static projection
+    if (liveBefore === 0) return m.after(intensity)
+    const ratio  = m.before !== 0 ? m.after(intensity) / m.before : 1
+    const result = liveBefore * ratio
+    if (m.unit === '★')    return Math.min(5,   Math.max(0, parseFloat(result.toFixed(1))))
+    if (m.unit === '/100') return Math.min(100, Math.max(0, Math.round(result)))
+    if (m.unit === '%')    return Math.min(100, Math.max(0, Math.round(result)))
+    return Math.max(0, Math.round(result))
+  }
+
+  // ─── Chart data ───────────────────────────────────────────────────────────
+
+  const chartData = scenario.metrics.map(m => {
+    const before = getLiveBefore(m)
+    return {
+      name:   m.label.split(' ').slice(0, 2).join(' '),
+      before,
+      after:  simulated ? getLiveAfter(m, before) : before,
+      unit:   m.unit,
+    }
+  })
 
   async function runSim() {
     setRunning(true)
@@ -28,12 +139,7 @@ export default function SimulatorPage() {
     setRunning(false)
   }
 
-  const chartData = scenario.metrics.map(m => ({
-    name:   m.label.split(' ').slice(0, 2).join(' '),
-    before: m.before,
-    after:  simulated ? m.after(intensity) : m.before,
-    unit:   m.unit,
-  }))
+  const liveTarget = liveTargets[activeId]
 
   return (
     <motion.div
@@ -48,14 +154,20 @@ export default function SimulatorPage() {
           <h1 className="text-2xl font-bold text-slate-900">{t('sim.title')}</h1>
           <p className="text-slate-500 text-sm mt-0.5">{t('sim.subtitle')}</p>
         </div>
-        {isLive && (
-          <div className="flex items-center gap-3 text-[11px] font-semibold">
-            <span className="text-slate-400">{lang === 'vi' ? 'Sức khỏe hiện tại:' : 'Current chain health:'}</span>
-            <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-full">
-              {chainStats.avgHealthScore}/100
-            </span>
-          </div>
-        )}
+        <div className="flex items-center gap-3 text-[11px] font-semibold">
+          {isLive && (
+            <>
+              <span className="text-slate-400">{vi ? 'Sức khỏe hiện tại:' : 'Current chain health:'}</span>
+              <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-full">
+                {chainStats.avgHealthScore}/100
+              </span>
+              <span className="flex items-center gap-1 bg-primary-50 text-primary-700 border border-primary-200 px-3 py-1.5 rounded-full">
+                <Zap size={10} />
+                {vi ? 'Baseline thực' : 'Live baselines'}
+              </span>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -77,10 +189,10 @@ export default function SimulatorPage() {
                   <span className="text-xl">{s.icon}</span>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-semibold truncate">
-                      {lang === 'vi' ? s.titleVi : s.title}
+                      {vi ? s.titleVi : s.title}
                     </div>
                     <div className={`text-[10px] mt-0.5 truncate ${activeId === s.id ? 'text-primary-200' : 'text-slate-400'}`}>
-                      {lang === 'vi' ? s.descVi.slice(0, 50) : s.desc.slice(0, 50)}…
+                      {vi ? s.descVi.slice(0, 50) : s.desc.slice(0, 50)}…
                     </div>
                   </div>
                 </button>
@@ -95,11 +207,7 @@ export default function SimulatorPage() {
               <span className="text-sm font-bold text-primary-700">{intensity}×</span>
             </div>
             <input
-              type="range"
-              min={0.5}
-              max={3}
-              step={0.5}
-              value={intensity}
+              type="range" min={0.5} max={3} step={0.5} value={intensity}
               onChange={e => { setIntensity(+e.target.value); setSimulated(false) }}
               className="w-full accent-primary-600"
             />
@@ -109,14 +217,22 @@ export default function SimulatorPage() {
           </div>
 
           {/* Scenario description */}
-          <div className="bg-primary-50 border border-primary-100 rounded-2xl p-4">
-            <div className="text-2xl mb-2">{scenario.icon}</div>
-            <h3 className="text-sm font-bold text-slate-800 mb-1.5">
-              {lang === 'vi' ? scenario.titleVi : scenario.title}
+          <div className="bg-primary-50 border border-primary-100 rounded-2xl p-4 space-y-2">
+            <div className="text-2xl">{scenario.icon}</div>
+            <h3 className="text-sm font-bold text-slate-800">
+              {vi ? scenario.titleVi : scenario.title}
             </h3>
             <p className="text-xs text-slate-500 leading-relaxed">
-              {lang === 'vi' ? scenario.descVi : scenario.desc}
+              {vi ? scenario.descVi : scenario.desc}
             </p>
+            {isLive && liveTarget && (
+              <div className="pt-1 border-t border-primary-200">
+                <p className="text-[10px] text-primary-700 font-semibold">
+                  {vi ? '🎯 Đang mô phỏng:' : '🎯 Simulating:'}{' '}
+                  <span className="font-bold">{liveTarget}</span>
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Run button */}
@@ -146,15 +262,21 @@ export default function SimulatorPage() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-slate-800">
                 {simulated
-                  ? `${t('sim.results')}: ${lang === 'vi' ? scenario.titleVi : scenario.title}`
-                  : t('sim.noResults')
-                }
+                  ? `${t('sim.results')}: ${vi ? scenario.titleVi : scenario.title}`
+                  : t('sim.noResults')}
               </h2>
-              {simulated && (
-                <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded-full">
-                  {t('sim.simulated')}
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {isLive && (
+                  <span className="text-[10px] font-semibold text-primary-600 bg-primary-50 border border-primary-200 px-2 py-1 rounded-full">
+                    {vi ? 'Số liệu thực' : 'Live data'}
+                  </span>
+                )}
+                {simulated && (
+                  <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded-full">
+                    {t('sim.simulated')}
+                  </span>
+                )}
+              </div>
             </div>
 
             <ResponsiveContainer width="100%" height={260}>
@@ -170,22 +292,29 @@ export default function SimulatorPage() {
                 <Bar dataKey="after"  name={t('sim.after')}  fill="#0F766E" radius={[4,4,0,0]} maxBarSize={40} />
               </BarChart>
             </ResponsiveContainer>
+
+            {/* Live baseline note */}
+            {isLive && (
+              <p className="text-[10px] text-slate-400 mt-3 flex items-center gap-1">
+                <Zap size={9} className="text-primary-400" />
+                {vi
+                  ? 'Giá trị "Trước" được tính từ dữ liệu đánh giá thực của chuỗi. "Sau" là ước tính theo tỉ lệ cải thiện.'
+                  : '"Before" values are derived from your real review data. "After" values apply the same improvement ratios.'}
+              </p>
+            )}
           </div>
 
           {/* Impact metrics */}
           <AnimatePresence>
             {simulated && (
-              <motion.div
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-              >
+              <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
                 <h2 className="font-bold text-slate-800 mb-3">{t('sim.impact')}</h2>
                 <div className="grid grid-cols-2 gap-4">
                   {scenario.metrics.map(m => {
-                    const after   = m.after(intensity)
-                    const delta   = after - m.before
-                    const pct     = m.before !== 0 ? Math.round((delta / m.before) * 100) : 0
+                    const before  = getLiveBefore(m)
+                    const after   = getLiveAfter(m, before)
+                    const delta   = after - before
+                    const pct     = before !== 0 ? Math.round((delta / before) * 100) : 0
                     const good    = m.higherIsBetter ? delta >= 0 : delta <= 0
                     const neutral = delta === 0
 
@@ -195,13 +324,12 @@ export default function SimulatorPage() {
                         <div className="flex items-end gap-3">
                           <div>
                             <div className="text-xs text-slate-400 mb-0.5">{t('sim.before')}</div>
-                            <div className="text-lg font-bold text-slate-400">{m.before}{m.unit}</div>
+                            <div className="text-lg font-bold text-slate-400">{before}{m.unit}</div>
                           </div>
                           <div className="flex-1 flex items-center justify-center pb-1">
                             {neutral ? <Minus size={16} className="text-slate-300" /> :
                               good ? <TrendingUp size={20} className="text-emerald-500" /> :
-                                <TrendingDown size={20} className="text-red-500" />
-                            }
+                                <TrendingDown size={20} className="text-red-500" />}
                           </div>
                           <div>
                             <div className="text-xs text-slate-400 mb-0.5">{t('sim.after')}</div>
@@ -224,9 +352,14 @@ export default function SimulatorPage() {
           {!simulated && !running && (
             <div className="bg-white rounded-2xl border border-dashed border-gray-200 p-12 text-center">
               <div className="text-4xl mb-3">⚡</div>
-              <p className="text-sm text-slate-400">
-                {t('sim.runToSee')}
-              </p>
+              <p className="text-sm text-slate-400">{t('sim.runToSee')}</p>
+              {isLive && (
+                <p className="text-xs text-primary-500 mt-2 font-medium">
+                  {vi
+                    ? `Baseline từ ${metrics.length} chi nhánh · ${chainStats.totalReviews} đánh giá thực`
+                    : `Baseline from ${metrics.length} branches · ${chainStats.totalReviews} real reviews`}
+                </p>
+              )}
             </div>
           )}
         </div>

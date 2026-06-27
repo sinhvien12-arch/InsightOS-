@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useLang } from '@/lib/LangContext'
+import { useLiveData } from '@/lib/useLiveData'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, AlertTriangle, MapPin, Brain,
@@ -42,6 +43,8 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname()
   const { t, lang } = useLang()
   const vi = lang === 'vi'
+  const { mode, chainStats } = useLiveData()
+  const isLive = mode === 'live'
 
   const isActive = (href: string) => {
     if (href === '/branches') return pathname.startsWith('/branch')
@@ -124,9 +127,11 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
         {/* Status footer */}
         <div className="px-5 py-4 border-t border-gray-100">
           <div className="flex items-center gap-2 mb-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
             <span className="text-[10px] text-slate-500 font-medium">
-              {vi ? 'Trực tiếp · 504 đánh giá' : 'Live · 504 reviews'}
+              {isLive
+                ? (vi ? `Trực tiếp · ${chainStats.totalReviews} đánh giá` : `Live · ${chainStats.totalReviews} reviews`)
+                : (vi ? 'Dữ liệu mẫu' : 'Demo data')}
             </span>
           </div>
           <div className="flex items-center gap-2">

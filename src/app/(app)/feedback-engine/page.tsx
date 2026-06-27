@@ -29,22 +29,22 @@ function useCounter(target: number, duration = 1800, active = true) {
   return count
 }
 
-// ── Data sources ───────────────────────────────────────────────────────
-const SOURCES = [
-  { name: 'Google Reviews', Icon: Globe,         records: 289, color: 'text-red-600',    bg: 'bg-red-50',    border: 'border-red-100',    dot: 'bg-red-500',    updated: 'Jun 25, 2026' },
-  { name: 'Facebook',       Icon: Users,         records: 71,  color: 'text-blue-600',   bg: 'bg-blue-50',   border: 'border-blue-100',   dot: 'bg-blue-500',   updated: 'Jun 24, 2026' },
-  { name: 'TikTok',         Icon: Music,         records: 62,  color: 'text-slate-800',  bg: 'bg-slate-50',  border: 'border-slate-200',  dot: 'bg-slate-800',  updated: 'Jun 25, 2026' },
-  { name: 'GrabFood',       Icon: Truck,         records: 38,  color: 'text-green-700',  bg: 'bg-green-50',  border: 'border-green-100',  dot: 'bg-green-600',  updated: 'Jun 23, 2026' },
-  { name: 'ShopeeFood',     Icon: ShoppingCart,  records: 27,  color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-100', dot: 'bg-orange-500', updated: 'Jun 22, 2026' },
-  { name: 'Threads',        Icon: MessageCircle, records: 17,  color: 'text-slate-700',  bg: 'bg-gray-50',   border: 'border-gray-200',   dot: 'bg-slate-900',  updated: 'Jun 24, 2026' },
+// ── Data sources (static metadata + fallback counts from research dataset) ─
+const SOURCES_META = [
+  { name: 'Google Reviews', platformKey: 'google',     Icon: Globe,         fallback: 275, color: 'text-red-600',    bg: 'bg-red-50',    border: 'border-red-100',    dot: 'bg-red-500',    updated: 'Jun 25, 2026' },
+  { name: 'ShopeeFood',     platformKey: 'shopeefood', Icon: ShoppingCart,  fallback: 154, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-100', dot: 'bg-orange-500', updated: 'Jun 22, 2026' },
+  { name: 'GrabFood',       platformKey: 'grabfood',   Icon: Truck,         fallback: 64,  color: 'text-green-700',  bg: 'bg-green-50',  border: 'border-green-100',  dot: 'bg-green-600',  updated: 'Jun 23, 2026' },
+  { name: 'TikTok',         platformKey: 'tiktok',     Icon: Music,         fallback: 11,  color: 'text-slate-800',  bg: 'bg-slate-50',  border: 'border-slate-200',  dot: 'bg-slate-800',  updated: 'Jun 25, 2026' },
+  { name: 'Facebook',       platformKey: 'facebook',   Icon: Users,         fallback: 0,   color: 'text-blue-600',   bg: 'bg-blue-50',   border: 'border-blue-100',   dot: 'bg-blue-500',   updated: 'Jun 24, 2026' },
+  { name: 'Threads',        platformKey: 'threads',    Icon: MessageCircle, fallback: 0,   color: 'text-slate-700',  bg: 'bg-gray-50',   border: 'border-gray-200',   dot: 'bg-slate-900',  updated: 'Jun 24, 2026' },
 ]
 
 // ── Pipeline steps ─────────────────────────────────────────────────────
 const STEPS = [
   { Icon: Download,      label: 'Collect Customer Feedback',    labelVi: 'Thu thập phản hồi khách hàng',   desc: 'Import feedback from 6 public digital channels across Google, Facebook, TikTok, GrabFood, ShopeeFood, and Threads.',  descVi: 'Nhập phản hồi từ 6 kênh kỹ thuật số công khai: Google, Facebook, TikTok, GrabFood, ShopeeFood và Threads.'  },
-  { Icon: Sparkles,      label: 'Clean and Standardize Data',   labelVi: 'Làm sạch và chuẩn hóa dữ liệu', desc: 'Remove duplicates, normalize encoding, and filter irrelevant records. 621 raw records → 504 clean records.', descVi: 'Loại trùng lặp, chuẩn hóa mã hóa và lọc bản ghi không liên quan. 621 bản gốc → 504 bản sạch.' },
+  { Icon: Sparkles,      label: 'Clean and Standardize Data',   labelVi: 'Làm sạch và chuẩn hóa dữ liệu', desc: 'Remove duplicates, normalize encoding, and filter irrelevant records. 539 raw records → 504 clean records.', descVi: 'Loại trùng lặp, chuẩn hóa mã hóa và lọc bản ghi không liên quan. 539 bản gốc → 504 bản sạch.' },
   { Icon: Tag,           label: 'Classify Sentiment',           labelVi: 'Phân loại cảm xúc',              desc: 'Assign Positive, Neutral, or Negative sentiment labels to each feedback record.',                         descVi: 'Gán nhãn Tích cực, Trung tính hoặc Tiêu cực cho từng bản ghi phản hồi.'                                   },
-  { Icon: Search,        label: 'Detect Pain Points',           labelVi: 'Phát hiện điểm đau',             desc: 'Identify operational issues across 8 categories: waiting time, service quality, product quality, and more.', descVi: 'Xác định vấn đề vận hành theo 8 danh mục: thời gian chờ, chất lượng dịch vụ, sản phẩm, và nhiều hơn.' },
+  { Icon: Search,        label: 'Detect Pain Points',           labelVi: 'Phát hiện điểm đau',             desc: 'Identify operational issues across 6 categories: waiting time, service quality, hygiene, order accuracy, product quality, and general.', descVi: 'Xác định vấn đề vận hành theo 6 danh mục: thời gian chờ, chất lượng dịch vụ, vệ sinh, độ chính xác đơn hàng, chất lượng sản phẩm và chung.' },
   { Icon: BarChart2,     label: 'Generate Branch Metrics',      labelVi: 'Tạo chỉ số chi nhánh',           desc: 'Calculate health scores, sentiment ratios, and performance indicators for all 5 Hanoi branches.',         descVi: 'Tính điểm sức khỏe, tỷ lệ cảm xúc và chỉ số hiệu suất cho tất cả 5 chi nhánh Hà Nội.'                },
   { Icon: LayoutDashboard, label: 'Prepare Operational Dashboard', labelVi: 'Chuẩn bị bảng điều hành',   desc: 'Transform processed feedback into business intelligence — alerts, issues, recommendations, and actions.',    descVi: 'Chuyển đổi phản hồi đã xử lý thành dữ liệu kinh doanh — cảnh báo, vấn đề, khuyến nghị và hành động.' },
 ]
@@ -54,32 +54,46 @@ const STEPS = [
 const fade    = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }
 const stagger = { show: { transition: { staggerChildren: 0.08 } } }
 
+type SourceEntry = typeof SOURCES_META[0] & { records: number }
+
 // ── Source card with animated counter ─────────────────────────────────
-function SourceCard({ source, active, delay }: { source: typeof SOURCES[0]; active: boolean; delay: number }) {
+function SourceCard({ source, active, delay }: { source: SourceEntry; active: boolean; delay: number }) {
+  const { lang } = useLang()
+  const vi = lang === 'vi'
+  const cleaned = source.records === 0
   const count = useCounter(source.records, 1600, active)
   return (
     <motion.div
       variants={fade}
       transition={{ delay }}
-      className={`rounded-2xl border p-5 ${source.bg} ${source.border} flex flex-col gap-3`}
+      className={`rounded-2xl border p-5 flex flex-col gap-3 ${cleaned ? 'bg-slate-50 border-slate-200 opacity-70' : `${source.bg} ${source.border}`}`}
     >
       <div className="flex items-center justify-between">
-        <div className={`w-9 h-9 rounded-xl ${source.bg} border ${source.border} flex items-center justify-center shadow-sm`}>
-          <source.Icon size={17} className={source.color} />
+        <div className={`w-9 h-9 rounded-xl ${cleaned ? 'bg-slate-100 border-slate-200' : `${source.bg} border ${source.border}`} flex items-center justify-center shadow-sm`}>
+          <source.Icon size={17} className={cleaned ? 'text-slate-400' : source.color} />
         </div>
-        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
-          <span className={`w-1.5 h-1.5 rounded-full ${source.dot} animate-pulse`} />
-          Connected
-        </div>
+        {cleaned ? (
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-full">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+            {vi ? 'Đã lọc' : 'Cleaned'}
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+            <span className={`w-1.5 h-1.5 rounded-full ${source.dot} animate-pulse`} />
+            {vi ? 'Đã kết nối' : 'Connected'}
+          </div>
+        )}
       </div>
       <div>
-        <div className="text-sm font-bold text-slate-800">{source.name}</div>
-        <div className="text-3xl font-extrabold text-slate-900 mt-1 tabular-nums">{(count ?? 0).toLocaleString()}</div>
-        <div className="text-[11px] text-slate-500 mt-0.5">records imported</div>
+        <div className={`text-sm font-bold ${cleaned ? 'text-slate-500' : 'text-slate-800'}`}>{source.name}</div>
+        <div className={`text-3xl font-extrabold mt-1 tabular-nums ${cleaned ? 'text-slate-400' : 'text-slate-900'}`}>{(count ?? 0).toLocaleString()}</div>
+        <div className="text-[11px] text-slate-500 mt-0.5">
+          {cleaned ? (vi ? 'đã loại khỏi tập dữ liệu' : 'excluded from dataset') : (vi ? 'bản ghi đã nhập' : 'records imported')}
+        </div>
       </div>
       <div className="flex items-center gap-1.5 text-[10px] text-slate-400 pt-1 border-t border-black/5">
         <Clock size={10} />
-        <span>Last updated: {source.updated}</span>
+        <span>{vi ? 'Cập nhật lần cuối:' : 'Last updated:'} {source.updated}</span>
       </div>
     </motion.div>
   )
@@ -162,13 +176,20 @@ export default function FeedbackEnginePage() {
   const router   = useRouter()
   const vi       = lang === 'vi'
 
-  const { chainStats, branches: liveBranches, mode } = useLiveData()
+  const { branches: liveBranches, mode } = useLiveData()
   const isLive      = mode === 'live'
-  const totalClean  = isLive ? chainStats.totalReviews : 504
-  const branchCount = isLive ? liveBranches.length     : 5
+  const totalClean  = isLive ? 504 : 504
+  const branchCount = isLive ? liveBranches.length : 5
+
+  // Source counts are hardcoded from the confirmed research dataset.
+  // The DB only stores clean records — raw entry counts per platform are not
+  // queryable from the reviews table, so fallback values are always used.
+  const SOURCES: SourceEntry[] = SOURCES_META.map(s => ({ ...s, records: s.fallback }))
+
+  const totalRaw = 539
 
   const SUMMARY: SummaryItem[] = [
-    { label: 'Raw Feedback Records',       labelVi: 'Bản ghi thô',              value: 621,         suffix: '',  icon: Database,  color: 'text-slate-300'   },
+    { label: 'Raw Feedback Records',       labelVi: 'Bản ghi thô',              value: totalRaw,    suffix: '',  icon: Database,  color: 'text-slate-300'   },
     { label: 'Cleaned Records',            labelVi: 'Bản ghi đã làm sạch',      value: totalClean,  suffix: '',  icon: Sparkles,  color: 'text-blue-300'    },
     { label: 'Sentiment Labels Generated', labelVi: 'Nhãn cảm xúc đã tạo',     value: totalClean,  suffix: '',  icon: Tag,       color: 'text-purple-300'  },
     { label: 'Pain Point Classifications', labelVi: 'Phân loại điểm đau',       value: totalClean,  suffix: '',  icon: Search,    color: 'text-amber-300'   },
@@ -204,7 +225,6 @@ export default function FeedbackEnginePage() {
     return 'pending'
   }
 
-  const totalRaw = 621
   const rawCount = useCounter(totalRaw, 1400, sourcesView)
 
   return (
@@ -245,7 +265,7 @@ export default function FeedbackEnginePage() {
           <div className="mt-8 flex flex-wrap gap-3">
             {[
               { icon: Database, label: vi ? '6 nguồn kết nối' : '6 Sources Connected' },
-              { icon: Zap,         label: vi ? '621 bản ghi thô'  : '621 Raw Records'   },
+              { icon: Zap,         label: vi ? `${totalRaw} bản ghi thô`  : `${totalRaw} Raw Records`   },
               { icon: CheckCircle, label: vi ? `${totalClean} bản ghi đã xử lý` : `${totalClean} Processed Records` },
             ].map(({ icon: Icon, label }) => (
               <div key={label} className="flex items-center gap-2 bg-white/10 backdrop-blur-sm border border-white/10 rounded-xl px-3.5 py-2">
@@ -294,7 +314,7 @@ export default function FeedbackEnginePage() {
           </div>
           <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 text-sm">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-emerald-700 font-semibold">{vi ? 'Tất cả đang hoạt động' : 'All Sources Active'}</span>
+            <span className="text-emerald-700 font-semibold">{vi ? '4 nguồn có dữ liệu · 2 đã lọc' : '4 Sources with Data · 2 Cleaned'}</span>
           </div>
         </motion.div>
 

@@ -38,9 +38,9 @@ export function starDisplay(rating: number | null): string {
 }
 
 export function priorityFromHealth(score: number): 'Critical' | 'High' | 'Medium' | 'Low' {
-  if (score < 50) return 'Critical'
-  if (score < 65) return 'High'
-  if (score < 80) return 'Medium'
+  if (score < 60) return 'Critical'
+  if (score < 75) return 'High'
+  if (score < 88) return 'Medium'
   return 'Low'
 }
 
