@@ -25,9 +25,9 @@ export default function AlertsPage() {
 
   const { mode, alerts: liveAlerts, branches: liveBranches } = useLiveData()
   const isLive   = mode === 'live'
-  const alerts   = (isLive && liveAlerts.length > 0)   ? liveAlerts   : demoAlerts
-  const branches = (isLive && liveBranches.length > 0) ? liveBranches.map(b => ({ id: b.id, name: b.name }))
-                                                        : demoBranches.map(b => ({ id: b.id, name: b.name }))
+  const alerts   = isLive ? liveAlerts   : demoAlerts
+  const branches = isLive ? liveBranches.map(b => ({ id: b.id, name: b.name }))
+                           : demoBranches.map(b => ({ id: b.id, name: b.name }))
 
   if (mode === 'empty') {
     return (

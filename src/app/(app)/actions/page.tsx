@@ -62,7 +62,7 @@ export default function ActionsPage() {
   const { mode, branches: liveBranches } = useLiveData()
   const isLive = mode === 'live' || mode === 'empty'
 
-  const [localActions,   setLocalActions]   = useState<Action[]>(demoActions)
+  const [localActions,   setLocalActions]   = useState<Action[]>([])
   const [statusFilter,   setStatusFilter]   = useState<FilterStatus>('All')
   const [expandedId,     setExpandedId]     = useState<string | null>(null)
   const [commentInputs,  setCommentInputs]  = useState<Record<string, string>>({})
@@ -107,11 +107,11 @@ export default function ActionsPage() {
     }
   }
 
-  // Load live actions when mode becomes live; fallback to demo otherwise
+  // Load actions from DB when live; show demo data only in explicit demo mode
   useEffect(() => {
     if (isLive) {
       loadActions()
-    } else if (mode !== 'checking') {
+    } else if (mode === 'demo') {
       setLocalActions(demoActions)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

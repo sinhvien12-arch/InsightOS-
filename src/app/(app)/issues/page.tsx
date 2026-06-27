@@ -72,7 +72,7 @@ export default function IssuesPage() {
 
   const { mode, issues: liveIssues, liveActions } = useLiveData()
   const isLive = mode === 'live'
-  const issues = (isLive && liveIssues.length > 0) ? liveIssues : demoIssues
+  const issues = isLive ? liveIssues : demoIssues
 
   const highlightId  = searchParams.get('highlight')
   const branchFilter = searchParams.get('branch')
