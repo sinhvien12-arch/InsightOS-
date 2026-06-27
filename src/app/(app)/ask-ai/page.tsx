@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Send, Sparkles } from 'lucide-react'
 import { useLang } from '@/lib/LangContext'
 import { useAuth } from '@/lib/AuthContext'
-import { getResponseByKey, suggestedPrompts } from '@/data/aiResponses'
+import { getResponseByKey, buildGreeting, suggestedPrompts } from '@/data/aiResponses'
 import { useAiContext } from '@/lib/useAiContext'
 import { streamAsk } from '@/lib/useAsk'
 import { auth } from '@/lib/firebase'
@@ -19,15 +19,26 @@ const nextId = () => SEQ++
 export default function AskAIPage() {
   const { t, lang } = useLang()
   const { user } = useAuth()
-  const { context, mode } = useAiContext()
+  const { context, mode, chainStats, metrics } = useAiContext()
+  const isLive = mode === 'live'
 
-  const [messages, setMessages] = useState<Message[]>([{ id: 0, role: 'ai', content: getResponseByKey('greeting_ask', lang) }])
+  const greetingText = () => isLive && chainStats.totalReviews > 0
+    ? buildGreeting('greeting_ask', lang, chainStats.totalReviews, metrics.length)
+    : getResponseByKey('greeting_ask', lang)
+
+  const [messages, setMessages] = useState<Message[]>([{ id: 0, role: 'ai', content: greetingText() }])
   const [input,    setInput]    = useState('')
   const [streaming, setStreaming] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLInputElement>(null)
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streaming])
+
+  // Update greeting when live data loads or language changes
+  useEffect(() => {
+    setMessages(prev => prev.map(m => m.id === 0 ? { ...m, content: greetingText() } : m))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang, mode, chainStats.totalReviews, metrics.length])
 
   async function sendMessage(prompt?: string | { en: string; vi: string }) {
     const text = (prompt && typeof prompt === 'object' ? (lang === 'vi' ? prompt.vi : prompt.en) : (typeof prompt === 'string' ? prompt : input)).trim()

@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Brain, MessageSquare, Lightbulb, Send, Tag, Eye, EyeOff, CheckCircle2 } from 'lucide-react'
 import { useLang } from '@/lib/LangContext'
 import { useAuth } from '@/lib/AuthContext'
-import { getResponseByKey, suggestedPrompts } from '@/data/aiResponses'
+import { getResponseByKey, buildGreeting, suggestedPrompts } from '@/data/aiResponses'
 import { recommendations as demoRecs } from '@/data/recommendations'
 import { branches as demoBranches } from '@/data/branches'
 import { useAiContext } from '@/lib/useAiContext'
@@ -47,7 +47,11 @@ export default function AICenterPage() {
   const vi = lang === 'vi'
   const [tab, setTab] = useState<Tab>('ask')
 
-  const [messages, setMessages] = useState<Message[]>([{ id: 0, role: 'ai', content: getResponseByKey('greeting_center', lang) }])
+  const greetingText = () => isLive && chainStats.totalReviews > 0
+    ? buildGreeting('greeting_center', lang, chainStats.totalReviews, metrics.length)
+    : getResponseByKey('greeting_center', lang)
+
+  const [messages, setMessages] = useState<Message[]>([{ id: 0, role: 'ai', content: greetingText() }])
   const [input,     setInput]     = useState('')
   const [streaming, setStreaming] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -61,10 +65,11 @@ export default function AICenterPage() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streaming])
 
-  // Update the initial greeting when user switches language
+  // Update the initial greeting when language changes or live data loads
   useEffect(() => {
-    setMessages(prev => prev.map(m => m.id === 0 ? { ...m, content: getResponseByKey('greeting_center', lang) } : m))
-  }, [lang])
+    setMessages(prev => prev.map(m => m.id === 0 ? { ...m, content: greetingText() } : m))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang, mode, chainStats.totalReviews, metrics.length])
 
   async function sendMessage(prompt?: string | { en: string; vi: string }) {
     const text = (prompt && typeof prompt === 'object' ? (lang === 'vi' ? prompt.vi : prompt.en) : (typeof prompt === 'string' ? prompt : input)).trim()

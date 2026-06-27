@@ -239,6 +239,19 @@ export function getResponseByKey(key: string, lang: 'en' | 'vi'): string {
   return lang === 'vi' ? entry.vi : entry.en
 }
 
+/** Build a greeting with live review / branch counts substituted in. */
+export function buildGreeting(key: 'greeting_ask' | 'greeting_center', lang: 'en' | 'vi', totalReviews: number, branchCount: number): string {
+  let text = getResponseByKey(key, lang)
+  text = text.replace(/\b504\b/g, String(totalReviews))
+  if (lang === 'vi') {
+    text = text.replace(/5 chi nhánh Hà Nội/g, `${branchCount} chi nhánh Hà Nội`)
+  } else {
+    text = text.replace(/5 Hanoi branches/g, `${branchCount} ${branchCount === 1 ? 'branch' : 'branches'}`)
+    text = text.replace(/your 5 /g, `your ${branchCount} `)
+  }
+  return text
+}
+
 /** Legacy helper kept for any callers outside the chat pages. */
 export function getAIResponse(query: string, lang: 'en' | 'vi' = 'en'): string {
   return getResponseByKey(getAIResponseKey(query), lang)

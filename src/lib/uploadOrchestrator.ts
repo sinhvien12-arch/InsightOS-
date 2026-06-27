@@ -7,7 +7,21 @@ import * as XLSX from 'xlsx'
 import { supabaseConfigured } from './supabase'
 import { auth } from './firebase'
 import { reviewsToMetrics } from './aggregate'
-import type { ProcessedReview, BranchMetrics, SentimentLabel } from './uploadTypes'
+import type { ProcessedReview, BranchMetrics, SentimentLabel, CategoryKey } from './uploadTypes'
+
+// Lightweight keyword-based category inference for pre-labeled rows (no API cost).
+const CATEGORY_KEYWORDS: Array<[CategoryKey, RegExp]> = [
+  ['waiting_time',    /wait|slow|queue|long time|chờ|lâu|mãi/i],
+  ['service_quality', /staff|rude|service|attitude|impolite|nhân viên|phục vụ|thái độ/i],
+  ['hygiene',         /clean|dirty|hygiene|vệ sinh|bẩn/i],
+  ['order_accuracy',  /wrong order|incorrect|missing|sai|thiếu|nhầm/i],
+  ['product_quality', /taste|quality|stale|not good|đồ uống|chất lượng|không ngon|dở/i],
+]
+
+function inferCategories(text: string): CategoryKey[] {
+  const cats = CATEGORY_KEYWORDS.filter(([, re]) => re.test(text)).map(([k]) => k)
+  return cats.length ? cats : ['general']
+}
 
 const CHUNK = 50
 const CONCURRENCY = 5
@@ -180,7 +194,7 @@ export async function processFile(
     rating: s.rating ?? undefined,
     sentiment:       s._csvSentiment!,
     sentiment_score: s._csvSentiment === 'positive' ? 0.9 : s._csvSentiment === 'negative' ? 0.1 : 0.5,
-    categories:      ['general' as const],
+    categories:      inferCategories(s.review_text),
     keywords_found:  [],
     processed_at:    nowIso,
   }))
@@ -224,7 +238,7 @@ export async function processFile(
     review_text: s.review_text, author_name: s.author_name,
     rating: s.rating ?? undefined,
     sentiment: 'neutral' as const, sentiment_score: 0.5,
-    categories: ['general' as const],
+    categories: ['general' as const] as CategoryKey[],
     keywords_found: [],
     processed_at: nowIso,
   }))
